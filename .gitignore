@@ -1,0 +1,11 @@
+.gradle/
+.idea/
+.kotlin/
+.cxx/
+build/
+**/build/
+local.properties
+captures/
+*.apk
+*.aab
+third_party/llama.cpp/

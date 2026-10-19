@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <style name="Base.Theme.EduAgent" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="colorPrimary">#425BD7</item>
+        <item name="colorPrimaryContainer">#DCE3FF</item>
+        <item name="android:fontFamily">sans</item>
+        <item name="android:navigationBarColor">#F7F9FF</item>
+        <item name="android:windowLightNavigationBar">true</item>
+        <item name="android:statusBarColor">#F7F9FF</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowActionModeOverlay">true</item>
+    </style>
+    <style name="Theme.EduAgent" parent="Base.Theme.EduAgent" />
+</resources>

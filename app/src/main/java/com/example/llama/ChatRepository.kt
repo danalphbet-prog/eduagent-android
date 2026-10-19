@@ -40,7 +40,9 @@ class LocalChatRepository(context: Context) : ChatRepository {
                         isUser = obj.getBoolean("isUser"),
                         createdAt = obj.optLong("createdAt", System.currentTimeMillis()),
                         metrics = stats,
-                        completed = obj.optBoolean("completed", true)
+                        completed = obj.optBoolean("completed", true),
+                        attachmentPath = obj.optString("attachmentPath").takeIf { it.isNotBlank() },
+                        modelName = obj.optString("modelName").takeIf { it.isNotBlank() }
                     )
                 }
             }.getOrDefault(emptyList())
@@ -57,6 +59,8 @@ class LocalChatRepository(context: Context) : ChatRepository {
                     .put("isUser", msg.isUser)
                     .put("createdAt", msg.createdAt)
                     .put("completed", msg.completed)
+                msg.attachmentPath?.let { obj.put("attachmentPath", it) }
+                msg.modelName?.let { obj.put("modelName", it) }
                 msg.metrics?.let { m ->
                     obj.put("metrics", JSONObject()
                         .put("promptTokens", m.promptTokens)
@@ -70,7 +74,7 @@ class LocalChatRepository(context: Context) : ChatRepository {
             val tmp = File(history.parentFile, "chat_history_v1.tmp")
             tmp.writeText(array.toString())
             Files.move(tmp.toPath(), history.toPath(), StandardCopyOption.REPLACE_EXISTING)
-            Unit
+            Unit // ChatRepository.save must return Unit, not the Path from Files.move.
         }
     }
 }

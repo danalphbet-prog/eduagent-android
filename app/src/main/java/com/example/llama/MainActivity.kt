@@ -6,8 +6,11 @@ import android.view.KeyEvent
 import android.view.View
 import android.view.inputmethod.EditorInfo
 import android.widget.EditText
+import android.widget.ImageView
 import android.widget.ProgressBar
 import android.widget.TextView
+import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.enableEdgeToEdge
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
@@ -36,6 +39,8 @@ class MainActivity : AppCompatActivity() {
     private val messages = mutableListOf<Message>()
     private val adapter = MessageAdapter(messages, ::showMessageDetails)
     private lateinit var modelRepository: ModelRepository
+    private lateinit var visionRepository: VisionModelRepository
+    private lateinit var imageStore: ImageAttachmentStore
     private lateinit var repository: ChatRepository
     private lateinit var engine: InferenceEngine
 
@@ -48,8 +53,29 @@ class MainActivity : AppCompatActivity() {
     private lateinit var downloadProgress: ProgressBar
     private lateinit var downloadButton: MaterialButton
     private lateinit var emptyState: View
+    private lateinit var attachButton: MaterialButton
+    private lateinit var attachmentPreview: View
+    private lateinit var selectedImage: ImageView
+    private var pendingImage: File? = null
+    private var visionInstallJob: Job? = null
     private var generationJob: Job? = null
     private var isReady = false
+
+    private val chooseImage = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri != null) lifecycleScope.launch {
+            attachButton.isEnabled = false
+            try {
+                pendingImage = imageStore.importImage(uri)
+                selectedImage.setImageBitmap(ImageAttachmentStore.thumbnail(pendingImage?.absolutePath))
+                attachmentPreview.visibility = View.VISIBLE
+                if (input.text.isBlank()) input.setText("@VLM O que tem na imagem?")
+            } catch (e: Exception) {
+                Toast.makeText(this@MainActivity, e.message ?: "Imagem inválida", Toast.LENGTH_LONG).show()
+            } finally {
+                attachButton.isEnabled = true
+            }
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -65,6 +91,8 @@ class MainActivity : AppCompatActivity() {
         }
 
         modelRepository = ModelRepository(applicationContext)
+        visionRepository = VisionModelRepository(applicationContext)
+        imageStore = ImageAttachmentStore(applicationContext)
         repository = LocalChatRepository(applicationContext)
         list = findViewById(R.id.messages)
         input = findViewById(R.id.user_input)
@@ -75,6 +103,9 @@ class MainActivity : AppCompatActivity() {
         downloadDescription = findViewById(R.id.download_description)
         downloadProgress = findViewById(R.id.download_progress)
         downloadButton = findViewById(R.id.download_button)
+        attachButton = findViewById(R.id.attach_button)
+        attachmentPreview = findViewById(R.id.attachment_preview)
+        selectedImage = findViewById(R.id.selected_image)
 
         list.layoutManager = LinearLayoutManager(this).apply { stackFromEnd = true }
         list.adapter = adapter
@@ -82,6 +113,11 @@ class MainActivity : AppCompatActivity() {
         refreshComposer()
 
         send.setOnClickListener { sendMessage() }
+        attachButton.setOnClickListener { chooseImage.launch("image/*") }
+        findViewById<View>(R.id.remove_attachment).setOnClickListener {
+            pendingImage = null
+            attachmentPreview.visibility = View.GONE
+        }
         input.setOnEditorActionListener { _, actionId, event ->
             if (actionId == EditorInfo.IME_ACTION_SEND ||
                 (event?.keyCode == KeyEvent.KEYCODE_ENTER && event.action == KeyEvent.ACTION_DOWN)) {
@@ -90,7 +126,7 @@ class MainActivity : AppCompatActivity() {
             } else false
         }
         downloadButton.setOnClickListener { beginDownload() }
-        findViewById<View>(R.id.model_info).setOnClickListener { showModelInfo() }
+        findViewById<View>(R.id.model_info).setOnClickListener { showModelManager() }
 
         lifecycleScope.launch {
             val history = repository.load()
@@ -198,10 +234,31 @@ class MainActivity : AppCompatActivity() {
 
     private fun sendMessage() {
         val text = input.text.toString().trim()
-        if (text.isEmpty() || !isReady || generationJob?.isActive == true) return
+        val image = pendingImage
+        val useVision = image != null || text.startsWith("@VLM", ignoreCase = true)
+        if (!isReady || generationJob?.isActive == true || (text.isEmpty() && image == null)) return
+        if (useVision && image == null) {
+            Toast.makeText(this, "Toque em + e selecione uma imagem para @VLM", Toast.LENGTH_LONG).show()
+            return
+        }
+        if (useVision) {
+            lifecycleScope.launch {
+                val installed = visionRepository.installedOrNull()
+                if (installed == null) {
+                    MaterialAlertDialogBuilder(this@MainActivity)
+                        .setTitle("Instalar SmolVLM?")
+                        .setMessage("Para analisar a foto, baixe o SmolVLM 500M Q4 e o projetor visual (aproximadamente 502 MB). Os arquivos ficam salvos no celular.")
+                        .setNegativeButton("Depois", null)
+                        .setPositiveButton("Baixar") { _, _ -> beginVisionDownload() }
+                        .show()
+                } else sendVisionMessage(text, image!!, installed)
+            }
+            return
+        }
         input.text.clear()
         val user = Message(UUID.randomUUID().toString(), text, isUser = true)
-        val assistant = Message(UUID.randomUUID().toString(), "", isUser = false, completed = false)
+        val assistant = Message(UUID.randomUUID().toString(), "", isUser = false, completed = false,
+            modelName = ModelRepository.MODEL_NAME)
         val startIndex = messages.size
         messages.add(user)
         messages.add(assistant)
@@ -253,6 +310,51 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun sendVisionMessage(text: String, image: File, installed: VisionModelRepository.Installed) {
+        if (generationJob?.isActive == true) return
+        val question = text.replaceFirst(Regex("^@VLM\\b\\s*", RegexOption.IGNORE_CASE), "")
+            .ifBlank { "O que tem nesta imagem? Descreva em português brasileiro." }
+        input.text.clear()
+        pendingImage = null
+        attachmentPreview.visibility = View.GONE
+        val user = Message(UUID.randomUUID().toString(), text.ifBlank { "@VLM $question" },
+            isUser = true, attachmentPath = image.absolutePath)
+        val assistant = Message(UUID.randomUUID().toString(), "", isUser = false,
+            completed = false, modelName = VisionModelRepository.NAME)
+        val index = messages.size
+        messages.add(user)
+        messages.add(assistant)
+        adapter.notifyItemRangeInserted(index, 2)
+        updateEmptyState()
+        list.scrollToPosition(messages.lastIndex)
+        refreshComposer(generating = true)
+        persistMessages()
+
+        generationJob = lifecycleScope.launch {
+            val start = SystemClock.elapsedRealtime()
+            try {
+                assistant.content = engine.analyzeImage(
+                    installed.weights.absolutePath, installed.projector.absolutePath,
+                    image.absolutePath, question)
+                val measurements = engine.lastVisionMetrics()
+                assistant.metrics = MessageMetrics(
+                    measurements.promptTokens, measurements.generatedTokens,
+                    measurements.prefillMs, measurements.prefillMs,
+                    SystemClock.elapsedRealtime() - start)
+            } catch (e: CancellationException) {
+                assistant.content = "⚠ Análise interrompida"
+            } catch (e: Exception) {
+                assistant.content = "⚠ Não foi possível analisar a foto: ${e.message ?: "erro desconhecido"}"
+                assistant.metrics = MessageMetrics(0, 0, 0, 0, SystemClock.elapsedRealtime() - start)
+            } finally {
+                assistant.completed = true
+                updateMessage(assistant)
+                persistMessages()
+                refreshComposer()
+            }
+        }
+    }
+
     private fun updateMessage(msg: Message) {
         val position = messages.indexOfFirst { it.id == msg.id }
         if (position >= 0) {
@@ -274,6 +376,7 @@ class MainActivity : AppCompatActivity() {
         val enabled = isReady && !generating
         input.isEnabled = enabled
         send.isEnabled = enabled
+        if (::attachButton.isInitialized) attachButton.isEnabled = enabled
         input.hint = if (isReady) "Mensagem" else "Aguardando instalação da IA..."
     }
 
@@ -293,8 +396,8 @@ class MainActivity : AppCompatActivity() {
             appendLine("Data: $timestamp")
             appendLine("ID: ${message.id}")
             if (!message.isUser) {
-                appendLine("Modelo: ${ModelRepository.MODEL_NAME}")
-                appendLine("Motor: llama.cpp (Android nativo)")
+                appendLine("Modelo: ${message.modelName ?: ModelRepository.MODEL_NAME}")
+                appendLine("Motor: llama.cpp (Android nativo${if (message.modelName == VisionModelRepository.NAME) " · libmtmd" else ""})")
                 message.metrics?.let { m ->
                     appendLine("\nTempo total: ${formatSeconds(m.totalMs)}")
                     appendLine("Até 1º texto: ${formatSeconds(m.firstTokenMs)}")
@@ -304,7 +407,10 @@ class MainActivity : AppCompatActivity() {
                     appendLine("Velocidade estimada: ${"%.1f".format(Locale.US, m.tokensPerSecond)} tokens/s")
                     appendLine("\nContadores vêm do motor nativo; nenhum desses números é gerado pela IA.")
                 }
-            } else appendLine("Caracteres: ${message.content.length}")
+            } else {
+                appendLine("Caracteres: ${message.content.length}")
+                if (message.attachmentPath != null) appendLine("Imagem anexada: sim · armazenamento local")
+            }
         }
         MaterialAlertDialogBuilder(this)
             .setTitle("Informações da mensagem")
@@ -313,18 +419,105 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
+    private fun showModelManager() {
+        lifecycleScope.launch {
+            val qwenInstalled = modelRepository.verifiedModelOrNull() != null
+            val visualInstalled = visionRepository.installedOrNull() != null
+            val visualStatus = when {
+                visualInstalled -> "Instalado · pesos Q4 + projetor f16 · ~502 MB"
+                visionInstallJob?.isActive == true -> "Download em andamento"
+                else -> "Não instalado · download de ~502 MB"
+            }
+            val qwenStatus = if (qwenInstalled) "✓ Instalado · ~1,12 GB" else "○ Não instalado"
+            MaterialAlertDialogBuilder(this@MainActivity)
+                .setTitle("Modelos locais")
+                .setMessage("Qwen2.5 1.5B (chat)\n$qwenStatus\n\n" +
+                    "SmolVLM 500M Q4 (visão)\n$visualStatus\n\n" +
+                    "A análise por @VLM acontece no aparelho. A foto é escolhida pelo botão +.")
+                .setNegativeButton("Fechar", null)
+                .setNeutralButton("Sobre") { _, _ -> showModelInfo() }
+                .setPositiveButton(if (visualInstalled) "Remover SmolVLM" else "Baixar SmolVLM") { _, _ ->
+                    if (visualInstalled) confirmRemoveVision() else beginVisionDownload()
+                }
+                .show()
+        }
+    }
+
+    private fun beginVisionDownload() {
+        if (visionInstallJob?.isActive == true) {
+            Toast.makeText(this, "Download visual já em andamento", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val progress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal)
+            .apply { max = 100; isIndeterminate = false }
+        val progressText = TextView(this).apply {
+            setPadding(40, 18, 40, 12)
+            text = "Preparando download…"
+            setTextColor(android.graphics.Color.DKGRAY)
+        }
+        val container = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            setPadding(32, 18, 32, 18)
+            addView(progressText)
+            addView(progress)
+        }
+        val dialog = MaterialAlertDialogBuilder(this)
+            .setTitle("Instalando visão local")
+            .setMessage("Pesos Q4 e projetor visual serão armazenados apenas uma vez.")
+            .setView(container)
+            .setNegativeButton("Em segundo plano", null)
+            .create()
+        dialog.show()
+        visionInstallJob = lifecycleScope.launch {
+            try {
+                visionRepository.install { label, current, total ->
+                    runOnUiThread {
+                        progress.progress = (current * 100L / total).coerceIn(0, 100).toInt()
+                        progressText.text = "$label · ${formatMb(current)} / ${formatMb(total)}"
+                    }
+                }
+                dialog.dismiss()
+                Toast.makeText(this@MainActivity, "SmolVLM pronto para analisar imagens!", Toast.LENGTH_LONG).show()
+            } catch (e: CancellationException) {
+                dialog.dismiss()
+                throw e
+            } catch (e: Exception) {
+                dialog.dismiss()
+                MaterialAlertDialogBuilder(this@MainActivity)
+                    .setTitle("Download visual não concluído")
+                    .setMessage(e.message ?: "Verifique a conexão e o espaço disponível")
+                    .setPositiveButton("Entendi", null)
+                    .show()
+            }
+        }
+    }
+
+    private fun confirmRemoveVision() {
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Remover SmolVLM?")
+            .setMessage("Os arquivos do modelo e projetor serão apagados. As conversas e fotos enviadas continuarão salvas.")
+            .setNegativeButton("Cancelar", null)
+            .setPositiveButton("Remover") { _, _ ->
+                lifecycleScope.launch {
+                    try {
+                        visionRepository.remove()
+                        Toast.makeText(this@MainActivity, "Modelo visual removido", Toast.LENGTH_SHORT).show()
+                    } catch (e: Exception) {
+                        Toast.makeText(this@MainActivity, e.message, Toast.LENGTH_LONG).show()
+                    }
+                }
+            }.show()
+    }
+
     private fun showModelInfo() {
         MaterialAlertDialogBuilder(this)
-            .setTitle("EduAgent · informações")
-            .setMessage("Modelo: ${ModelRepository.MODEL_NAME}\n" +
-                "Contexto ativo: 4.096 tokens\n" +
-                "Respostas: até 448 tokens\n" +
-                "Execução: local, pelo llama.cpp\n" +
-                "Mensagens: salvas apenas no aparelho\n" +
-                "Firebase: reservado para uma versão futura\n\n" +
-                "Segure uma bolha de mensagem para conferir latência e tokens.")
-            .setPositiveButton("Entendi", null)
-            .show()
+            .setTitle("EduAgent · funcionamento")
+            .setMessage("Qwen: conversa de texto, contexto de 4.096 tokens.\n" +
+                "SmolVLM Q4: perguntas sobre uma foto selecionada, com projetor visual.\n" +
+                "Motor: llama.cpp + libmtmd, sem envio de imagens a servidores.\n" +
+                "Mensagens e anexos: armazenamento local. Firebase: futuro.\n\n" +
+                "Segure uma mensagem para consultar tempo e tokens.")
+            .setPositiveButton("Fechar", null).show()
     }
 
     override fun onStop() {

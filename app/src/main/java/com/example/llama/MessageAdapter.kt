@@ -4,6 +4,7 @@ import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.widget.TextView
+import android.widget.ImageView
 import androidx.recyclerview.widget.RecyclerView
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -28,6 +29,8 @@ data class Message(
     val createdAt: Long = System.currentTimeMillis(),
     var metrics: MessageMetrics? = null,
     var completed: Boolean = true,
+    var attachmentPath: String? = null,
+    var modelName: String? = null,
 )
 
 class MessageAdapter(
@@ -49,10 +52,17 @@ class MessageAdapter(
     override fun onBindViewHolder(holder: MessageHolder, position: Int) {
         val item = messages[position]
         holder.content.text = if (item.content.isEmpty() && !item.completed) "Pensando…" else item.content
+        holder.content.visibility = if (item.content.isBlank() && item.attachmentPath != null) View.GONE else View.VISIBLE
+        holder.image?.let { preview ->
+            val bitmap = ImageAttachmentStore.thumbnail(item.attachmentPath)
+            preview.visibility = if (bitmap == null) View.GONE else View.VISIBLE
+            preview.setImageBitmap(bitmap)
+        }
         val time = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(item.createdAt))
         holder.metadata.text = when {
             item.isUser -> time
             !item.completed -> "$time · gerando…"
+            item.modelName == VisionModelRepository.NAME -> "$time · visão · ${item.metrics?.let { formatSeconds(it.totalMs) } ?: "concluído"}"
             item.metrics != null -> "$time · ${formatSeconds(item.metrics!!.totalMs)} · segure para detalhes"
             else -> time
         }
@@ -65,6 +75,7 @@ class MessageAdapter(
     class MessageHolder(view: View) : RecyclerView.ViewHolder(view) {
         val content: TextView = view.findViewById(R.id.msg_content)
         val metadata: TextView = view.findViewById(R.id.msg_meta)
+        val image: ImageView? = view.findViewById(R.id.msg_image)
     }
 }
 

@@ -8,6 +8,16 @@
     android:paddingEnd="15dp"
     android:paddingTop="5dp"
     android:paddingBottom="5dp">
+    <ImageView
+        android:id="@+id/msg_image"
+        android:layout_width="220dp"
+        android:layout_height="190dp"
+        android:layout_marginBottom="4dp"
+        android:adjustViewBounds="true"
+        android:scaleType="centerCrop"
+        android:contentDescription="Imagem anexada"
+        android:background="@drawable/bg_user_message"
+        android:visibility="gone" />
     <TextView
         android:id="@+id/msg_content"
         android:layout_width="wrap_content"

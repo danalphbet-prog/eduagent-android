@@ -37,7 +37,8 @@ endif()
 add_subdirectory(${LLAMA_SRC} build-llama)
 
 add_library(${CMAKE_PROJECT_NAME} SHARED
-        ai_chat.cpp)
+        ai_chat.cpp
+        vision.cpp)
 
 target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
         GGML_SYSTEM_ARCH=${GGML_SYSTEM_ARCH}
@@ -48,6 +49,7 @@ target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
         ${LLAMA_SRC}
         ${LLAMA_SRC}/common
+        ${LLAMA_SRC}/tools/mtmd
         ${LLAMA_SRC}/include
         ${LLAMA_SRC}/ggml/include
         ${LLAMA_SRC}/ggml/src)
@@ -55,5 +57,6 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
 target_link_libraries(${CMAKE_PROJECT_NAME}
         llama
         llama-common
+        mtmd
         android
         log)

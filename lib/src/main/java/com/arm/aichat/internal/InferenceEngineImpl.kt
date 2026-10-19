@@ -107,6 +107,10 @@ internal class InferenceEngineImpl private constructor(
     @FastNative
     private external fun nativeLastGenerationMetrics(): LongArray
 
+    private external fun analyzeImageNative(modelPath: String, projectorPath: String, imagePath: String, prompt: String): String
+
+    private external fun nativeLastVisionMetrics(): LongArray
+
     @FastNative
     private external fun unload()
 
@@ -267,6 +271,17 @@ internal class InferenceEngineImpl private constructor(
     override suspend fun lastGenerationMetrics(): GenerationMetrics = withContext(llamaDispatcher) {
         val values = nativeLastGenerationMetrics()
         require(values.size == 3) { "Invalid native metrics" }
+        GenerationMetrics(values[0], values[1], values[2])
+    }
+
+    override suspend fun analyzeImage(modelPath: String, projectorPath: String, imagePath: String, prompt: String): String =
+        withContext(llamaDispatcher) {
+            check(_state.value is InferenceEngine.State.ModelReady) { "IA ainda não está pronta" }
+            analyzeImageNative(modelPath, projectorPath, imagePath, prompt)
+        }
+
+    override suspend fun lastVisionMetrics(): GenerationMetrics = withContext(llamaDispatcher) {
+        val values = nativeLastVisionMetrics()
         GenerationMetrics(values[0], values[1], values[2])
     }
 

@@ -33,6 +33,12 @@ interface InferenceEngine {
     /** Runtime measurements for the most recently completed message. */
     suspend fun lastGenerationMetrics(): GenerationMetrics
 
+    /** Local vision inference with a GGUF language model and matching image projector. */
+    suspend fun analyzeImage(modelPath: String, projectorPath: String, imagePath: String, prompt: String): String
+
+    /** Counts measured in the native vision runner, available after analyzeImage. */
+    suspend fun lastVisionMetrics(): GenerationMetrics
+
     /**
      * Runs a benchmark with the specified parameters.
      */

@@ -1,5 +1,8 @@
 package com.example.llama
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.os.Bundle
 import android.os.SystemClock
 import android.view.KeyEvent
@@ -7,7 +10,11 @@ import android.view.View
 import android.view.inputmethod.EditorInfo
 import android.widget.EditText
 import android.widget.ImageView
+import android.widget.LinearLayout
 import android.widget.ProgressBar
+import android.widget.ScrollView
+import android.widget.SeekBar
+import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
@@ -43,6 +50,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var imageStore: ImageAttachmentStore
     private lateinit var repository: ChatRepository
     private lateinit var engine: InferenceEngine
+    private lateinit var settings: AiSettings
 
     private lateinit var list: RecyclerView
     private lateinit var input: EditText
@@ -93,6 +101,7 @@ class MainActivity : AppCompatActivity() {
         modelRepository = ModelRepository(applicationContext)
         visionRepository = VisionModelRepository(applicationContext)
         imageStore = ImageAttachmentStore(applicationContext)
+        settings = AiSettings.load(applicationContext)
         repository = LocalChatRepository(applicationContext)
         list = findViewById(R.id.messages)
         input = findViewById(R.id.user_input)
@@ -127,6 +136,7 @@ class MainActivity : AppCompatActivity() {
         }
         downloadButton.setOnClickListener { beginDownload() }
         findViewById<View>(R.id.model_info).setOnClickListener { showModelManager() }
+        findViewById<View>(R.id.settings_button).setOnClickListener { showSettings() }
 
         lifecycleScope.launch {
             val history = repository.load()
@@ -213,15 +223,24 @@ class MainActivity : AppCompatActivity() {
             engine.loadModel(file.absolutePath)
             engine.setSystemPrompt(buildSystemPrompt())
         }
+        engine.setTemperature(settings.temperature)
         isReady = true
         status.text = "Qwen2.5 · IA local pronta"
         refreshComposer()
     }
 
     private fun buildSystemPrompt(): String {
-        val previous = messages.filter { it.completed && it.content.isNotBlank() }
-            .takeLast(8)
-            .joinToString("\n") { (if (it.isUser) "Pessoa" else "Tutor") + ": " + it.content.take(500) }
+        val previous = messages.filter { it.completed && it.content.isNotBlank() &&
+            (settings.sharedContext || it.modelName != VisionModelRepository.NAME) }
+            .takeLast(settings.contextMessages)
+            .joinToString("\n") {
+                val role = when {
+                    it.isUser -> "Pessoa"
+                    it.modelName == VisionModelRepository.NAME -> "Tutor visual (transcrição sobre a imagem)"
+                    else -> "Tutor Qwen"
+                }
+                "$role: ${it.content.take(350)}"
+            }
         return """
             Você é EduAgent, um tutor experimental de português brasileiro. Responda claramente,
             em frases curtas e amistosas. Em Matemática, ensine passo a passo e dê pistas antes de
@@ -234,8 +253,13 @@ class MainActivity : AppCompatActivity() {
 
     private fun sendMessage() {
         val text = input.text.toString().trim()
-        val image = pendingImage
-        val useVision = image != null || text.startsWith("@VLM", ignoreCase = true)
+        val explicitVision = text.startsWith("@VLM", ignoreCase = true)
+        val image = pendingImage ?: if (explicitVision && settings.reuseLastImage) {
+            messages.asReversed().firstNotNullOfOrNull { message ->
+                message.attachmentPath?.let { path -> File(path).takeIf { it.isFile } }
+            }
+        } else null
+        val useVision = image != null || explicitVision
         if (!isReady || generationJob?.isActive == true || (text.isEmpty() && image == null)) return
         if (useVision && image == null) {
             Toast.makeText(this, "Toque em + e selecione uma imagem para @VLM", Toast.LENGTH_LONG).show()
@@ -255,6 +279,7 @@ class MainActivity : AppCompatActivity() {
             }
             return
         }
+        val qwenPrompt = ConversationBridge.forQwen(messages, text, settings)
         input.text.clear()
         val user = Message(UUID.randomUUID().toString(), text, isUser = true)
         val assistant = Message(UUID.randomUUID().toString(), "", isUser = false, completed = false,
@@ -274,7 +299,7 @@ class MainActivity : AppCompatActivity() {
             val output = StringBuilder()
             var failure: String? = null
             try {
-                engine.sendUserPrompt(text, predictLength = 448).collect { chunk ->
+                engine.sendUserPrompt(qwenPrompt, predictLength = settings.qwenMaxTokens).collect { chunk ->
                     if (chunk.isNotEmpty()) {
                         if (firstToken == 0L) firstToken = SystemClock.elapsedRealtime() - started
                         output.append(chunk)
@@ -314,6 +339,7 @@ class MainActivity : AppCompatActivity() {
         if (generationJob?.isActive == true) return
         val question = text.replaceFirst(Regex("^@VLM\\b\\s*", RegexOption.IGNORE_CASE), "")
             .ifBlank { "O que tem nesta imagem? Descreva em português brasileiro." }
+        val visionPrompt = ConversationBridge.forVision(messages, question, settings)
         input.text.clear()
         pendingImage = null
         attachmentPreview.visibility = View.GONE
@@ -335,7 +361,7 @@ class MainActivity : AppCompatActivity() {
             try {
                 assistant.content = engine.analyzeImage(
                     installed.weights.absolutePath, installed.projector.absolutePath,
-                    image.absolutePath, question)
+                    image.absolutePath, visionPrompt, settings.visionMaxTokens, settings.temperature)
                 val measurements = engine.lastVisionMetrics()
                 assistant.metrics = MessageMetrics(
                     measurements.promptTokens, measurements.generatedTokens,
@@ -415,7 +441,123 @@ class MainActivity : AppCompatActivity() {
         MaterialAlertDialogBuilder(this)
             .setTitle("Informações da mensagem")
             .setMessage(data)
-            .setPositiveButton("Fechar", null)
+            .setNegativeButton("Fechar", null)
+            .setPositiveButton("Copiar texto") { _, _ ->
+                val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                clipboard.setPrimaryClip(ClipData.newPlainText("Mensagem EduAgent", message.content))
+                Toast.makeText(this, "Mensagem copiada", Toast.LENGTH_SHORT).show()
+            }
+            .show()
+    }
+
+    private fun applySettings(updated: AiSettings) {
+        settings = updated
+        settings.save(applicationContext)
+        if (::engine.isInitialized && engine.state.value.isModelLoaded) {
+            lifecycleScope.launch {
+                runCatching { engine.setTemperature(settings.temperature) }
+                    .onFailure {
+                        Toast.makeText(this@MainActivity,
+                            "Criatividade será aplicada quando a IA estiver pronta", Toast.LENGTH_SHORT).show()
+                    }
+            }
+        }
+        Toast.makeText(this, "Configurações salvas", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun showSettings() {
+        if (generationJob?.isActive == true) {
+            Toast.makeText(this, "Aguarde a resposta terminar para alterar a configuração", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val dp = resources.displayMetrics.density
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding((22 * dp).toInt(), (6 * dp).toInt(), (22 * dp).toInt(), (12 * dp).toInt())
+        }
+
+        fun slider(title: String, lower: Int, upper: Int, step: Int, selected: Int,
+                   suffix: String = ""): SeekBar {
+            val header = TextView(this).apply {
+                setTextColor(android.graphics.Color.rgb(39, 53, 82))
+                textSize = 15f
+                setPadding(0, (10 * dp).toInt(), 0, 0)
+            }
+            val seek = SeekBar(this).apply {
+                max = (upper - lower) / step
+                progress = (selected - lower).coerceIn(0, upper - lower) / step
+            }
+            fun render(value: Int) { header.text = "$title: $value$suffix" }
+            render(lower + seek.progress * step)
+            seek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(bar: SeekBar, progress: Int, fromUser: Boolean) {
+                    render(lower + progress * step)
+                }
+                override fun onStartTrackingTouch(bar: SeekBar) = Unit
+                override fun onStopTrackingTouch(bar: SeekBar) = Unit
+            })
+            content.addView(header)
+            content.addView(seek)
+            return seek
+        }
+
+        val intro = TextView(this).apply {
+            text = "Menos tokens = respostas mais curtas e geralmente mais rápidas. " +
+                "A leitura inicial da imagem ainda leva tempo."
+            textSize = 13f
+            setTextColor(android.graphics.Color.DKGRAY)
+        }
+        content.addView(intro)
+        val qwenLimit = slider("Máximo de tokens do Qwen", 32, 512, 32, settings.qwenMaxTokens)
+        val visualLimit = slider("Máximo de tokens do SmolVLM", 16, 256, 16, settings.visionMaxTokens)
+        val creativity = slider("Criatividade (0 = mais previsível)", 0, 10, 1,
+            (settings.temperature * 10).toInt(), "/10")
+        val memorySize = slider("Mensagens recentes no contexto", 2, 16, 2, settings.contextMessages)
+
+        fun toggle(label: String, checked: Boolean): Switch = Switch(this).apply {
+            text = label
+            textSize = 14f
+            isChecked = checked
+            setPadding(0, (8 * dp).toInt(), 0, (8 * dp).toInt())
+            content.addView(this)
+        }
+        val bridge = toggle("Compartilhar contexto entre as duas IAs", settings.sharedContext)
+        val concise = toggle("Priorizar respostas objetivas", settings.conciseAnswers)
+        val reuse = toggle("@VLM pode reutilizar a última foto", settings.reuseLastImage)
+
+        val fast = MaterialButton(this).apply {
+            text = "Perfil rápido: respostas menores"
+            setOnClickListener {
+                qwenLimit.progress = (96 - 32) / 32
+                visualLimit.progress = (48 - 16) / 16
+                memorySize.progress = (4 - 2) / 2
+                creativity.progress = 2
+                concise.isChecked = true
+            }
+        }
+        content.addView(fast)
+        val scroll = ScrollView(this).apply {
+            addView(content)
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, (420 * dp).toInt())
+        }
+
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Configurações da IA")
+            .setView(scroll)
+            .setNegativeButton("Cancelar", null)
+            .setNeutralButton("Restaurar") { _, _ -> applySettings(AiSettings()) }
+            .setPositiveButton("Salvar") { _, _ ->
+                applySettings(AiSettings(
+                    qwenMaxTokens = 32 + qwenLimit.progress * 32,
+                    visionMaxTokens = 16 + visualLimit.progress * 16,
+                    temperature = creativity.progress / 10f,
+                    contextMessages = 2 + memorySize.progress * 2,
+                    sharedContext = bridge.isChecked,
+                    conciseAnswers = concise.isChecked,
+                    reuseLastImage = reuse.isChecked,
+                ))
+            }
             .show()
     }
 

@@ -4,6 +4,7 @@
 #include <cmath>
 #include <string>
 #include <chrono>
+#include <algorithm>
 #include <unistd.h>
 #include <sampling.h>
 
@@ -112,6 +113,17 @@ static common_sampler *new_sampler(float temp) {
     common_params_sampling sparams;
     sparams.temp = temp;
     return common_sampler_init(g_model, sparams);
+}
+
+// Runs on the same serialized worker as inference; preserves the model KV cache.
+extern "C" JNIEXPORT void JNICALL
+Java_com_arm_aichat_internal_InferenceEngineImpl_nativeSetSamplingTemperature(
+        JNIEnv *, jobject, jfloat temperature) {
+    if (!g_model) return;
+    auto * replacement = new_sampler(std::clamp(static_cast<float>(temperature), 0.0f, 1.0f));
+    if (!replacement) return;
+    common_sampler_free(g_sampler);
+    g_sampler = replacement;
 }
 
 extern "C"

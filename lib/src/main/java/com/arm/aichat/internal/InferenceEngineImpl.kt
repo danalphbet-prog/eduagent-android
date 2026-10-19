@@ -107,7 +107,12 @@ internal class InferenceEngineImpl private constructor(
     @FastNative
     private external fun nativeLastGenerationMetrics(): LongArray
 
-    private external fun analyzeImageNative(modelPath: String, projectorPath: String, imagePath: String, prompt: String): String
+    private external fun analyzeImageNative(
+        modelPath: String, projectorPath: String, imagePath: String,
+        prompt: String, maxTokens: Int, temperature: Float
+    ): String
+
+    private external fun nativeSetSamplingTemperature(temperature: Float)
 
     private external fun nativeLastVisionMetrics(): LongArray
 
@@ -274,11 +279,20 @@ internal class InferenceEngineImpl private constructor(
         GenerationMetrics(values[0], values[1], values[2])
     }
 
-    override suspend fun analyzeImage(modelPath: String, projectorPath: String, imagePath: String, prompt: String): String =
+    override suspend fun analyzeImage(
+        modelPath: String, projectorPath: String, imagePath: String,
+        prompt: String, maxTokens: Int, temperature: Float
+    ): String =
         withContext(llamaDispatcher) {
             check(_state.value is InferenceEngine.State.ModelReady) { "IA ainda não está pronta" }
-            analyzeImageNative(modelPath, projectorPath, imagePath, prompt)
+            analyzeImageNative(modelPath, projectorPath, imagePath, prompt,
+                maxTokens.coerceIn(16, 256), temperature.coerceIn(0f, 1f))
         }
+
+    override suspend fun setTemperature(temperature: Float) = withContext(llamaDispatcher) {
+        check(_state.value is InferenceEngine.State.ModelReady) { "IA ainda não está pronta" }
+        nativeSetSamplingTemperature(temperature.coerceIn(0f, 1f))
+    }
 
     override suspend fun lastVisionMetrics(): GenerationMetrics = withContext(llamaDispatcher) {
         val values = nativeLastVisionMetrics()

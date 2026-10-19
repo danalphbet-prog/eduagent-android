@@ -38,7 +38,9 @@ int64_t elapsed_ms(clock_type::time_point start) {
 std::string run_vision(const std::string & weights,
                        const std::string & projector,
                        const std::string & image,
-                       const std::string & question) {
+                       const std::string & question,
+                       int max_tokens,
+                       float temperature) {
     vision_metrics[0] = vision_metrics[1] = vision_metrics[2] = 0;
 
     llama_model_params model_params = llama_model_default_params();
@@ -98,7 +100,7 @@ std::string run_vision(const std::string & weights,
     vision_metrics[2] = elapsed_ms(prefill_started);
 
     common_params_sampling sampler_params;
-    sampler_params.temp = 0.3f;
+    sampler_params.temp = std::clamp(temperature, 0.0f, 1.0f);
     std::unique_ptr<common_sampler, decltype(&common_sampler_free)> sampler(
         common_sampler_init(model.get(), sampler_params), &common_sampler_free);
     ensure(sampler != nullptr, "Não foi possível preparar geração visual");
@@ -106,7 +108,7 @@ std::string run_vision(const std::string & weights,
     common_batch batch(ctx.get());
     const auto * vocab = llama_model_get_vocab(model.get());
     std::string response;
-    for (int i = 0; i < 192 && position + 1 < static_cast<llama_pos>(llama_n_ctx(ctx.get())); ++i) {
+    for (int i = 0; i < std::clamp(max_tokens, 16, 256) && position + 1 < static_cast<llama_pos>(llama_n_ctx(ctx.get())); ++i) {
         const llama_token token = common_sampler_sample(sampler.get(), ctx.get(), -1);
         common_sampler_accept(sampler.get(), token, true);
         if (llama_vocab_is_eog(vocab, token)) break;
@@ -124,10 +126,11 @@ std::string run_vision(const std::string & weights,
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_arm_aichat_internal_InferenceEngineImpl_analyzeImageNative(
     JNIEnv * env, jobject, jstring jweights, jstring jprojector,
-    jstring jimage, jstring jquestion) {
+    jstring jimage, jstring jquestion, jint max_tokens, jfloat temperature) {
     try {
         std::string result = run_vision(utf8(env, jweights), utf8(env, jprojector),
-                                        utf8(env, jimage), utf8(env, jquestion));
+                                        utf8(env, jimage), utf8(env, jquestion),
+                                        max_tokens, temperature);
         return env->NewStringUTF(result.c_str());
     } catch (const std::exception & e) {
         jclass exception = env->FindClass("java/lang/IllegalStateException");

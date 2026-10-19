@@ -56,6 +56,15 @@
             android:textColor="#4E60A0"
             android:textSize="24sp"
             android:contentDescription="Gerenciar modelos locais" />
+        <TextView
+            android:id="@+id/settings_button"
+            android:layout_width="44dp"
+            android:layout_height="44dp"
+            android:gravity="center"
+            android:text="⚙"
+            android:textColor="#4E60A0"
+            android:textSize="24sp"
+            android:contentDescription="Configurações da IA" />
     </LinearLayout>
 
     <LinearLayout

@@ -8,10 +8,13 @@ Aplicativo de chat **de texto e imagens** para Android, com inferência executad
 - Download assistido na primeira abertura, **uma vez**: ~1,12 GB. Arquivo GGUF mantido no armazenamento privado do aplicativo, com retomada de download interrompido e verificação SHA-256. Reabrir o app não faz download novamente enquanto o arquivo verificado permanecer instalado.
 - Chat responsivo, com geração de texto gradual (streaming), histórico preservado em `chat_history_v1.json` no dispositivo e contexto por sessão, até 4.096 tokens.
 - Pressão longa em uma bolha: detalhes da mensagem, tempo total, tempo até a primeira saída, prefill, tokens de entrada/saída e velocidade estimada. Os contadores são medidos pelo runtime, **não redigidos pelo modelo**.
+- No mesmo modal aberto ao segurar uma mensagem, toque em **Copiar texto** para enviar o conteúdo ao clipboard do Android.
 - Interface `ChatRepository` separada para permitir futura integração ao Firebase, sem Firebase nesta versão.
 - Botão **+** ao lado da digitação: seleciona foto da galeria/documentos do Android, copia para o armazenamento privado, permite visualizar e remover o anexo antes de enviar.
 - Com uma imagem selecionada, escreva `@VLM O que tem na imagem?` e envie. O SmolVLM interpreta a imagem **localmente**, usando dois arquivos GGUF: pesos Q4 (~303 MB) **e** projetor f16 (~199 MB). O download é opcional e único, retoma de onde parou e verifica ambos por SHA-256. O modelo visual não é usado para conversas sem imagens.
 - Ícone **☷** no topo abre um modal **Modelos locais** com estado dos modelos Qwen e SmolVLM, opção de download e remoção do modelo visual. Segurar uma mensagem visual mostra tokens e tempo.
+- Ícone **⚙** abre configurações persistentes: limite de geração Qwen (32–512 tokens), limite SmolVLM (16–256 tokens), criatividade/temperatura (0–1), quantidade de mensagens recentes no contexto (2–16), respostas objetivas, compartilhamento de contexto entre as duas IAs e reutilização da última foto. Inclui perfil rápido e restaurar padrões.
+- **Contexto compartilhado:** depois que `@VLM` descreve uma foto, o Qwen passa a receber essa descrição como texto em perguntas seguintes, como "pode traduzir?" ou "explique melhor a imagem". O SmolVLM também recebe trechos limitados do chat textual. O Qwen **não recebe pixels**: sua compreensão visual fica restrita ao que o SmolVLM descreveu.
 
 **Requisitos:** aparelho **Android 13 (API 33) ou superior, 64 bits**, pelo menos ~2,1 GB livres para instalar os dois modelos e o projetor, e memória suficiente para modelos + contexto + Android. Para visão, recomendamos **8 GB de RAM ou mais** para teste inicial, porque Qwen e SmolVLM podem coexistir na memória durante a análise. O tempo de geração varia muito por SoC; não garantimos desempenho. Internet necessária somente para baixar modelos.
 
@@ -33,9 +36,10 @@ O APK será produzido em `app/build/outputs/apk/debug/app-debug.apk`. Também ex
 1. Abra o app e aceite o download inicial (recomendamos Wi-Fi). É possível cancelar e retomar na próxima abertura.
 2. Aguarde a verificação SHA-256 e o carregamento local do modelo.
 3. Escreva e envie uma mensagem. O tutor responde aos poucos.
-4. Segure uma mensagem para abrir as estatísticas reais da inferência.
+4. Segure uma mensagem para abrir as estatísticas reais da inferência e **copiar** seu texto.
 5. Feche e reabra. As mensagens e o modelo continuam salvos no armazenamento privado do app. Desinstalar o aplicativo pode apagá-los.
 6. Para analisar imagem, toque em **+**, selecione uma foto e envie a mensagem **`@VLM O que tem na imagem?`**. Na primeira vez, aceite instalar o SmolVLM (pesos Q4 + projetor). Gerencie-o pelo ícone no topo. O analisador visual gera uma resposta completa, sem streaming nesta versão.
+7. Depois de receber uma descrição, pergunte ao Qwen **"Pode traduzir a descrição da foto?"** para continuar com o contexto visual. Para analisar a mesma imagem de novo sem anexar, use `@VLM` (se a opção de reutilização estiver ligada). Use **⚙** para reduzir tokens quando desejar respostas rápidas.
 
 ## Estrutura
 
@@ -47,6 +51,8 @@ O APK será produzido em `app/build/outputs/apk/debug/app-debug.apk`. Também ex
 | `app/.../VisionModelRepository.kt` | Download Q4 e projetor, cache e remoção |
 | `app/.../ImageAttachmentStore.kt` | Importação local segura dos anexos selecionados |
 | `app/.../ChatRepository.kt` | Persistência local, ponto de extensão para Firebase |
+| `app/.../AiSettings.kt` | Preferências locais de desempenho e memória |
+| `app/.../ConversationBridge.kt` | Transferência de contexto textual entre Qwen e SmolVLM |
 | `lib/.../InferenceEngineImpl.kt` | Interface Kotlin ↔ JNI e thread nativa |
 | `lib/src/main/cpp/ai_chat.cpp` | Inferência, contexto e contagem de tokens |
 | `lib/src/main/cpp/vision.cpp` | Inferência visual local com libmtmd/SmolVLM e contagem de tokens |
@@ -58,6 +64,7 @@ O APK será produzido em `app/build/outputs/apk/debug/app-debug.apk`. Também ex
 - Um modelo de 1,5B parâmetros pode errar, especialmente em conteúdo pedagógico ou assuntos sensíveis; o acompanhamento humano continua essencial.
 - As estatísticas são de uma inferência local na sessão. `Tempo total` inclui agendamento e entrega à interface; `prefill` é a medição nativa da avaliação dos tokens de entrada. `Tokens/s` é uma estimativa baseada no tempo total menos prefill, não um benchmark isolado do hardware.
 - O contexto é limitado a 4.096 tokens e reaproveita a sessão enquanto o app está aberto; ao reabrir, um resumo textual de até oito mensagens recentes é acrescentado ao prompt inicial. Não é uma memória ilimitada.
+- O limite de **tokens de resposta** é diferente da janela de contexto. Reduzi-lo geralmente acelera a geração, mas não elimina o tempo de leitura/prefill de imagens nem a carga dos modelos. O compartilhamento entre IAs utiliza resumos textuais, não memória multimodal conjunta.
 - A análise de imagem é feita para **uma imagem de cada vez**; o SmolVLM é pequeno e pode falhar em OCR de letra pequena, textos complexos, gráficos e raciocínio visual. Não monitora outros aplicativos ou a tela e não ativa câmera: somente imagens escolhidas manualmente.
 
 ## Licenças e origens

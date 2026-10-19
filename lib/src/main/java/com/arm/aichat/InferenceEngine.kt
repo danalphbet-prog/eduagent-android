@@ -34,7 +34,13 @@ interface InferenceEngine {
     suspend fun lastGenerationMetrics(): GenerationMetrics
 
     /** Local vision inference with a GGUF language model and matching image projector. */
-    suspend fun analyzeImage(modelPath: String, projectorPath: String, imagePath: String, prompt: String): String
+    suspend fun analyzeImage(
+        modelPath: String, projectorPath: String, imagePath: String,
+        prompt: String, maxTokens: Int, temperature: Float
+    ): String
+
+    /** Change text sampling without resetting the already-loaded Qwen context. */
+    suspend fun setTemperature(temperature: Float)
 
     /** Counts measured in the native vision runner, available after analyzeImage. */
     suspend fun lastVisionMetrics(): GenerationMetrics

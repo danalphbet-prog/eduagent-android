@@ -70,6 +70,7 @@ class LocalChatRepository(context: Context) : ChatRepository {
             val tmp = File(history.parentFile, "chat_history_v1.tmp")
             tmp.writeText(array.toString())
             Files.move(tmp.toPath(), history.toPath(), StandardCopyOption.REPLACE_EXISTING)
+            Unit
         }
     }
 }

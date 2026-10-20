@@ -462,7 +462,7 @@ class PocketBubbleService : Service() {
     private fun initializeSpeechEngine(preferred: String?) {
         val listener = TextToSpeech.OnInitListener { result ->
             usingPocketVoice = result == TextToSpeech.SUCCESS &&
-                greetingTts?.currentEngine == POCKET_ENGINE_PACKAGE
+                preferred == POCKET_ENGINE_PACKAGE
             val languageState = if (result == TextToSpeech.SUCCESS)
                 greetingTts?.setLanguage(Locale("pt", "BR")) else null
             ttsReady = languageState != null &&

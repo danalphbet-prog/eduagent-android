@@ -1,10 +1,15 @@
 package com.example.llama
 
+import android.Manifest
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Bundle
 import android.os.SystemClock
+import android.provider.Settings
 import android.view.KeyEvent
 import android.view.View
 import android.view.inputmethod.EditorInfo
@@ -20,6 +25,7 @@ import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.enableEdgeToEdge
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.lifecycleScope
@@ -55,6 +61,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var list: RecyclerView
     private lateinit var input: EditText
     private lateinit var send: MaterialButton
+    private lateinit var bubbleToggle: MaterialButton
     private lateinit var status: TextView
     private lateinit var downloadPanel: View
     private lateinit var downloadDescription: TextView
@@ -68,6 +75,20 @@ class MainActivity : AppCompatActivity() {
     private var visionInstallJob: Job? = null
     private var generationJob: Job? = null
     private var isReady = false
+
+    private val requestOverlay = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        if (Settings.canDrawOverlays(this)) requestMicPermission()
+        else Toast.makeText(this, "Autorize 'Aparecer sobre outros apps' para mostrar a bolha", Toast.LENGTH_LONG).show()
+        refreshBubbleToggle()
+    }
+
+    private val requestMicrophone = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
+        if (result[Manifest.permission.RECORD_AUDIO] == true ||
+            ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        ) startBubbleMode()
+        else Toast.makeText(this, "Sem microfone a bolha não pode escutar sons altos", Toast.LENGTH_LONG).show()
+        refreshBubbleToggle()
+    }
 
     private val chooseImage = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null) lifecycleScope.launch {
@@ -106,6 +127,7 @@ class MainActivity : AppCompatActivity() {
         list = findViewById(R.id.messages)
         input = findViewById(R.id.user_input)
         send = findViewById(R.id.send_button)
+        bubbleToggle = findViewById(R.id.voice_bubble_button)
         status = findViewById(R.id.engine_status)
         emptyState = findViewById(R.id.empty_state)
         downloadPanel = findViewById(R.id.download_panel)
@@ -122,6 +144,9 @@ class MainActivity : AppCompatActivity() {
         refreshComposer()
 
         send.setOnClickListener { sendMessage() }
+        bubbleToggle.setOnClickListener { toggleBubbleMode() }
+        bubbleToggle.setOnLongClickListener { showBubbleHelp(); true }
+        refreshBubbleToggle()
         attachButton.setOnClickListener { chooseImage.launch("image/*") }
         findViewById<View>(R.id.remove_attachment).setOnClickListener {
             pendingImage = null
@@ -406,6 +431,76 @@ class MainActivity : AppCompatActivity() {
         input.hint = if (isReady) "Mensagem" else "Aguardando instalação da IA..."
     }
 
+    private fun refreshBubbleToggle() {
+        if (!::bubbleToggle.isInitialized) return
+        val active = PocketBubbleService.preferences(this).getBoolean(PocketBubbleService.PREF_ACTIVE, false)
+        bubbleToggle.text = if (active) "●" else "◉"
+        bubbleToggle.contentDescription = if (active) "Desativar a bolha de voz" else "Ativar a bolha de voz"
+        bubbleToggle.setTextColor(if (active) android.graphics.Color.WHITE else 0xFF526EE3.toInt())
+        bubbleToggle.backgroundTintList = android.content.res.ColorStateList.valueOf(
+            if (active) 0xFF526EE3.toInt() else 0xFFE8EDFC.toInt()
+        )
+    }
+
+    private fun toggleBubbleMode() {
+        if (PocketBubbleService.preferences(this).getBoolean(PocketBubbleService.PREF_ACTIVE, false)) {
+            PocketBubbleService.stop(this)
+            PocketBubbleService.preferences(this).edit().putBoolean(PocketBubbleService.PREF_ACTIVE, false).apply()
+            refreshBubbleToggle()
+            return
+        }
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Ativar assistente flutuante?")
+            .setMessage("A bolha ficará visível sobre outros aplicativos, mas o microfone permanecerá " +
+                "desligado até você tocar nela. Após a saudação, ele escutará por 10 segundos " +
+                "e voltará a hibernar automaticamente. Outro toque cancela a escuta. " +
+                "Não reage a ruídos altos, não salva áudios e ainda não transcreve a fala. " +
+                "Para desativar, toque novamente neste botão ou em 'Desativar' na notificação.")
+            .setNegativeButton("Cancelar", null)
+            .setPositiveButton("Ativar") { _, _ -> requestBubblePermissions() }
+            .show()
+    }
+
+    private fun requestBubblePermissions() {
+        if (!Settings.canDrawOverlays(this)) {
+            requestOverlay.launch(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                Uri.parse("package:$packageName")))
+        } else requestMicPermission()
+    }
+
+    private fun requestMicPermission() {
+        val permissions = mutableListOf(Manifest.permission.RECORD_AUDIO)
+        // Android 13+: notification permission is optional, but makes the active mic easy to spot.
+        if (android.os.Build.VERSION.SDK_INT >= 33) permissions.add(Manifest.permission.POST_NOTIFICATIONS)
+        val needed = permissions.filter {
+            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+        }
+        if (needed.isEmpty()) startBubbleMode() else requestMicrophone.launch(needed.toTypedArray())
+    }
+
+    private fun startBubbleMode() {
+        if (!Settings.canDrawOverlays(this) ||
+            ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) return
+        runCatching { PocketBubbleService.start(this) }
+            .onFailure { Toast.makeText(this, "Não foi possível iniciar a bolha: ${it.message}", Toast.LENGTH_LONG).show() }
+        // The service sets this flag only after the foreground microphone starts.
+        bubbleToggle.postDelayed({ refreshBubbleToggle() }, 450)
+    }
+
+    private fun showBubbleHelp() {
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Pocket TTS + bolha EduAgent")
+            .setMessage("Toque na bolha para ouvir 'Opa, oi, tudo bem? Quer ajuda?'. " +
+                "Em seguida, o microfone liga por 10 segundos, com contagem regressiva na bolha. " +
+                "Toque outra vez para hibernar imediatamente; arraste para mudar de lugar. " +
+                "Sem tocar, o microfone fica desligado.\n\n" +
+                "A saudação utiliza a voz disponível no Android; o Pocket TTS nativo ainda " +
+                "precisa ser incorporado ao APK. A escuta temporizada ainda não transforma " +
+                "fala em texto. Nenhuma conversa ou áudio é enviado a um serviço externo.")
+            .setPositiveButton("Entendi", null)
+            .show()
+    }
+
     private fun showDownloadPanel(description: String) {
         status.text = "IA aguardando instalação"
         downloadPanel.visibility = View.VISIBLE
@@ -575,6 +670,7 @@ class MainActivity : AppCompatActivity() {
                 .setTitle("Modelos locais")
                 .setMessage("Qwen2.5 1.5B (chat)\n$qwenStatus\n\n" +
                     "SmolVLM 500M Q4 (visão)\n$visualStatus\n\n" +
+                    "Voz / Pocket TTS\nSaudação usa voz Android; Pocket TTS nativo pendente de integração\n\n" +
                     "A análise por @VLM acontece no aparelho. A foto é escolhida pelo botão +.")
                 .setNegativeButton("Fechar", null)
                 .setNeutralButton("Sobre") { _, _ -> showModelInfo() }
@@ -660,6 +756,11 @@ class MainActivity : AppCompatActivity() {
                 "Mensagens e anexos: armazenamento local. Firebase: futuro.\n\n" +
                 "Segure uma mensagem para consultar tempo e tokens.")
             .setPositiveButton("Fechar", null).show()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        refreshBubbleToggle()
     }
 
     override fun onStop() {

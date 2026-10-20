@@ -240,6 +240,20 @@
                 android:textColorHint="#92A0B8"
                 android:textSize="15sp" />
             <com.google.android.material.button.MaterialButton
+                android:id="@+id/voice_bubble_button"
+                android:layout_width="46dp"
+                android:layout_height="49dp"
+                android:layout_marginStart="7dp"
+                android:minWidth="0dp"
+                android:minHeight="0dp"
+                android:padding="0dp"
+                android:text="◉"
+                android:textSize="23sp"
+                android:textColor="#526EE3"
+                android:contentDescription="Ativar assistente flutuante com voz"
+                app:backgroundTint="#E8EDFC"
+                app:cornerRadius="18dp" />
+            <com.google.android.material.button.MaterialButton
                 android:id="@+id/send_button"
                 android:layout_width="54dp"
                 android:layout_height="49dp"

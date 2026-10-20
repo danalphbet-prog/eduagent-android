@@ -1,6 +1,6 @@
 # EduAgent — MVP Android com Qwen local e SmolVLM
 
-Aplicativo de chat **de texto e imagens** para Android, com inferência executada no próprio celular através do **llama.cpp/libmtmd**: **Qwen2.5-1.5B-Instruct Q4_K_M** para texto e **SmolVLM-500M-Instruct Q4_K_M** com projetor visual f16 para imagens. Primeiro experimento de um tutor educativo pessoal, sem monitoramento de outros apps, voz, câmeras ou acesso escolar nesta fase.
+Aplicativo de chat **de texto e imagens** para Android, com inferência executada no próprio celular através do **llama.cpp/libmtmd**: **Qwen2.5-1.5B-Instruct Q4_K_M** para texto e **SmolVLM-500M-Instruct Q4_K_M** com projetor visual f16 para imagens. Inclui um protótipo opt-in de assistente flutuante com microfone ativado somente pelo toque durante 10 segundos, e saudação por TTS; ainda não reconhece comandos falados.
 
 ## O que já está implementado
 
@@ -15,6 +15,8 @@ Aplicativo de chat **de texto e imagens** para Android, com inferência executad
 - Ícone **☷** no topo abre um modal **Modelos locais** com estado dos modelos Qwen e SmolVLM, opção de download e remoção do modelo visual. Segurar uma mensagem visual mostra tokens e tempo.
 - Ícone **⚙** abre configurações persistentes: limite de geração Qwen (32–512 tokens), limite SmolVLM (16–256 tokens), criatividade/temperatura (0–1), quantidade de mensagens recentes no contexto (2–16), respostas objetivas, compartilhamento de contexto entre as duas IAs e reutilização da última foto. Inclui perfil rápido e restaurar padrões.
 - **Contexto compartilhado:** depois que `@VLM` descreve uma foto, o Qwen passa a receber essa descrição como texto em perguntas seguintes, como "pode traduzir?" ou "explique melhor a imagem". O SmolVLM também recebe trechos limitados do chat textual. O Qwen **não recebe pixels**: sua compreensão visual fica restrita ao que o SmolVLM descreveu.
+- Botão **◉** ao lado de enviar: solicita permissões separadas de sobreposição e microfone, inicia um serviço de primeiro plano e mostra uma bolha de 56dp arrastável sobre outros apps. A bolha começa em **hibernação**, com microfone fechado. O toque reproduz uma saudação e inicia uma janela de **10 segundos de escuta**, indicada por contagem regressiva. Novo toque cancela e volta à hibernação. Não há ativação por ruídos altos. A notificação permanente possui **Desativar**. O app não armazena amostras de áudio.
+- **Voz atual:** somente a saudação pública e fixa é falada, com o TTS disponível no Android. Não é necessário instalar um aplicativo Pocket separado. O **Pocket TTS nativo ainda não está incluído no APK**: sua integração exige empacotar o runtime e os pesos do modelo. O código atual não passa textos privados do chat ao TTS.
 
 **Requisitos:** aparelho **Android 13 (API 33) ou superior, 64 bits**, pelo menos ~2,1 GB livres para instalar os dois modelos e o projetor, e memória suficiente para modelos + contexto + Android. Para visão, recomendamos **8 GB de RAM ou mais** para teste inicial, porque Qwen e SmolVLM podem coexistir na memória durante a análise. O tempo de geração varia muito por SoC; não garantimos desempenho. Internet necessária somente para baixar modelos.
 
@@ -40,6 +42,7 @@ O APK será produzido em `app/build/outputs/apk/debug/app-debug.apk`. Também ex
 5. Feche e reabra. As mensagens e o modelo continuam salvos no armazenamento privado do app. Desinstalar o aplicativo pode apagá-los.
 6. Para analisar imagem, toque em **+**, selecione uma foto e envie a mensagem **`@VLM O que tem na imagem?`**. Na primeira vez, aceite instalar o SmolVLM (pesos Q4 + projetor). Gerencie-o pelo ícone no topo. O analisador visual gera uma resposta completa, sem streaming nesta versão.
 7. Depois de receber uma descrição, pergunte ao Qwen **"Pode traduzir a descrição da foto?"** para continuar com o contexto visual. Para analisar a mesma imagem de novo sem anexar, use `@VLM` (se a opção de reutilização estiver ligada). Use **⚙** para reduzir tokens quando desejar respostas rápidas.
+8. Para o modo flutuante, toque **◉**, leia o aviso e permita **Sobrepor outros aplicativos** e **Microfone**. Arraste a bolha, toque nela para ouvir a saudação e espere a contagem de 10 a 0 durante a janela de microfone. Para cancelar antes, toque novamente. Sem toque, o microfone fica fechado; não há reconhecimento da voz nesta etapa.
 
 ## Estrutura
 
@@ -53,6 +56,7 @@ O APK será produzido em `app/build/outputs/apk/debug/app-debug.apk`. Também ex
 | `app/.../ChatRepository.kt` | Persistência local, ponto de extensão para Firebase |
 | `app/.../AiSettings.kt` | Preferências locais de desempenho e memória |
 | `app/.../ConversationBridge.kt` | Transferência de contexto textual entre Qwen e SmolVLM |
+| `app/.../PocketBubbleService.kt` | Sobreposição arrastável, máquina de estados hibernação/saudação/escuta, contador de 10s, notificação e saudação fixa |
 | `lib/.../InferenceEngineImpl.kt` | Interface Kotlin ↔ JNI e thread nativa |
 | `lib/src/main/cpp/ai_chat.cpp` | Inferência, contexto e contagem de tokens |
 | `lib/src/main/cpp/vision.cpp` | Inferência visual local com libmtmd/SmolVLM e contagem de tokens |
@@ -66,6 +70,7 @@ O APK será produzido em `app/build/outputs/apk/debug/app-debug.apk`. Também ex
 - O contexto é limitado a 4.096 tokens e reaproveita a sessão enquanto o app está aberto; ao reabrir, um resumo textual de até oito mensagens recentes é acrescentado ao prompt inicial. Não é uma memória ilimitada.
 - O limite de **tokens de resposta** é diferente da janela de contexto. Reduzi-lo geralmente acelera a geração, mas não elimina o tempo de leitura/prefill de imagens nem a carga dos modelos. O compartilhamento entre IAs utiliza resumos textuais, não memória multimodal conjunta.
 - A análise de imagem é feita para **uma imagem de cada vez**; o SmolVLM é pequeno e pode falhar em OCR de letra pequena, textos complexos, gráficos e raciocínio visual. Não monitora outros aplicativos ou a tela e não ativa câmera: somente imagens escolhidas manualmente.
+- O modo flutuante **ainda não reconhece fala** (STT): seus 10 segundos servem para testar o controle temporizado do microfone, não para enviar comandos ao Qwen. Ele **não reage a ruídos** enquanto hiberna. Android pode suspender serviços de primeiro plano em alguns cenários de recursos limitados; não reinicia após forçar parada ou reiniciar o telefone. O motor Pocket TTS nativo e a narração progressiva de respostas do Qwen ainda são tarefas pendentes, sem dependência de um aplicativo separado planejada para a solução final.
 
 ## Licenças e origens
 

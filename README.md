@@ -1,6 +1,6 @@
 # EduAgent — MVP Android com Qwen local e SmolVLM
 
-Aplicativo de chat **de texto e imagens** para Android, com inferência executada no próprio celular através do **llama.cpp/libmtmd**: **Qwen2.5-1.5B-Instruct Q4_K_M** para texto e **SmolVLM-500M-Instruct Q4_K_M** com projetor visual f16 para imagens. Inclui um protótipo opt-in de assistente flutuante com microfone ativado somente pelo toque durante 10 segundos, e saudação por TTS; ainda não reconhece comandos falados.
+Aplicativo de chat **de texto, imagens e voz** para Android, com inferência executada no próprio celular através do **llama.cpp/libmtmd**: **Qwen2.5-1.5B-Instruct Q4_K_M** para texto e **SmolVLM-500M-Instruct Q4_K_M** com projetor visual f16 para imagens. A bolha opt-in reconhece perguntas pelo serviço de reconhecimento offline do Android, consulta o Qwen e lê a resposta em trechos usando o TTS instalado no sistema.
 
 ## O que já está implementado
 
@@ -16,7 +16,7 @@ Aplicativo de chat **de texto e imagens** para Android, com inferência executad
 - Ícone **⚙** abre configurações persistentes: limite de geração Qwen (32–512 tokens), limite SmolVLM (16–256 tokens), criatividade/temperatura (0–1), quantidade de mensagens recentes no contexto (2–16), respostas objetivas, compartilhamento de contexto entre as duas IAs e reutilização da última foto. Inclui perfil rápido e restaurar padrões.
 - **Contexto compartilhado:** depois que `@VLM` descreve uma foto, o Qwen passa a receber essa descrição como texto em perguntas seguintes, como "pode traduzir?" ou "explique melhor a imagem". O SmolVLM também recebe trechos limitados do chat textual. O Qwen **não recebe pixels**: sua compreensão visual fica restrita ao que o SmolVLM descreveu.
 - Botão **◉** ao lado de enviar: solicita permissões separadas de sobreposição e microfone, inicia um serviço de primeiro plano e mostra uma bolha de 56dp arrastável sobre outros apps. A bolha começa em **hibernação**, com microfone fechado. O toque reproduz uma saudação e inicia uma janela de **10 segundos de escuta**, indicada por contagem regressiva. Novo toque cancela e volta à hibernação. Não há ativação por ruídos altos. A notificação permanente possui **Desativar**. O app não armazena amostras de áudio.
-- **Voz atual:** somente a saudação pública e fixa é falada, com o TTS disponível no Android. Não é necessário instalar um aplicativo Pocket separado. O **Pocket TTS nativo ainda não está incluído no APK**: sua integração exige empacotar o runtime e os pesos do modelo. O código atual não passa textos privados do chat ao TTS.
+- **Voz atual:** a fala reconhecida entra no histórico do chat, é respondida pelo mesmo Qwen e a resposta é narrada em pedaços por frase, sem aguardar os 2 mil caracteres completos. Usa **o sintetizador de voz e o reconhecimento local disponíveis no Android**. Não é necessário instalar um aplicativo Pocket separado. O **Kyutai Pocket TTS nativo ainda não está incluído no APK**: integrar essa voz específica exige empacotar runtime e pesos, em uma etapa posterior. O áudio gravado não é salvo nem enviado pelo EduAgent, mas as transcrições e respostas são armazenadas localmente.
 
 **Requisitos:** aparelho **Android 13 (API 33) ou superior, 64 bits**, pelo menos ~2,1 GB livres para instalar os dois modelos e o projetor, e memória suficiente para modelos + contexto + Android. Para visão, recomendamos **8 GB de RAM ou mais** para teste inicial, porque Qwen e SmolVLM podem coexistir na memória durante a análise. O tempo de geração varia muito por SoC; não garantimos desempenho. Internet necessária somente para baixar modelos.
 
@@ -42,7 +42,7 @@ O APK será produzido em `app/build/outputs/apk/debug/app-debug.apk`. Também ex
 5. Feche e reabra. As mensagens e o modelo continuam salvos no armazenamento privado do app. Desinstalar o aplicativo pode apagá-los.
 6. Para analisar imagem, toque em **+**, selecione uma foto e envie a mensagem **`@VLM O que tem na imagem?`**. Na primeira vez, aceite instalar o SmolVLM (pesos Q4 + projetor). Gerencie-o pelo ícone no topo. O analisador visual gera uma resposta completa, sem streaming nesta versão.
 7. Depois de receber uma descrição, pergunte ao Qwen **"Pode traduzir a descrição da foto?"** para continuar com o contexto visual. Para analisar a mesma imagem de novo sem anexar, use `@VLM` (se a opção de reutilização estiver ligada). Use **⚙** para reduzir tokens quando desejar respostas rápidas.
-8. Para o modo flutuante, toque **◉**, leia o aviso e permita **Sobrepor outros aplicativos** e **Microfone**. Arraste a bolha, toque nela para ouvir a saudação e espere a contagem de 10 a 0 durante a janela de microfone. Para cancelar antes, toque novamente. Sem toque, o microfone fica fechado; não há reconhecimento da voz nesta etapa.
+8. Para o modo flutuante, toque **◉**, leia o aviso e permita **Sobrepor outros aplicativos** e **Microfone**. Arraste a bolha, toque nela para ouvir a saudação, fale sua pergunta durante a janela de 10 segundos, e aguarde a resposta falada por trechos. Para cancelar antes, toque novamente. Sem toque, o microfone fica fechado. O serviço offline de reconhecimento deve estar disponível e configurado no celular.
 
 ## Estrutura
 
@@ -56,7 +56,7 @@ O APK será produzido em `app/build/outputs/apk/debug/app-debug.apk`. Também ex
 | `app/.../ChatRepository.kt` | Persistência local, ponto de extensão para Firebase |
 | `app/.../AiSettings.kt` | Preferências locais de desempenho e memória |
 | `app/.../ConversationBridge.kt` | Transferência de contexto textual entre Qwen e SmolVLM |
-| `app/.../PocketBubbleService.kt` | Sobreposição arrastável, máquina de estados hibernação/saudação/escuta, contador de 10s, notificação e saudação fixa |
+| `app/.../PocketBubbleService.kt` | Sobreposição arrastável, hibernação/saudação/escuta, reconhecimento de fala local, integração Qwen e narração por trechos |
 | `lib/.../InferenceEngineImpl.kt` | Interface Kotlin ↔ JNI e thread nativa |
 | `lib/src/main/cpp/ai_chat.cpp` | Inferência, contexto e contagem de tokens |
 | `lib/src/main/cpp/vision.cpp` | Inferência visual local com libmtmd/SmolVLM e contagem de tokens |
@@ -70,7 +70,8 @@ O APK será produzido em `app/build/outputs/apk/debug/app-debug.apk`. Também ex
 - O contexto é limitado a 4.096 tokens e reaproveita a sessão enquanto o app está aberto; ao reabrir, um resumo textual de até oito mensagens recentes é acrescentado ao prompt inicial. Não é uma memória ilimitada.
 - O limite de **tokens de resposta** é diferente da janela de contexto. Reduzi-lo geralmente acelera a geração, mas não elimina o tempo de leitura/prefill de imagens nem a carga dos modelos. O compartilhamento entre IAs utiliza resumos textuais, não memória multimodal conjunta.
 - A análise de imagem é feita para **uma imagem de cada vez**; o SmolVLM é pequeno e pode falhar em OCR de letra pequena, textos complexos, gráficos e raciocínio visual. Não monitora outros aplicativos ou a tela e não ativa câmera: somente imagens escolhidas manualmente.
-- O modo flutuante **ainda não reconhece fala** (STT): seus 10 segundos servem para testar o controle temporizado do microfone, não para enviar comandos ao Qwen. Ele **não reage a ruídos** enquanto hiberna. Android pode suspender serviços de primeiro plano em alguns cenários de recursos limitados; não reinicia após forçar parada ou reiniciar o telefone. O motor Pocket TTS nativo e a narração progressiva de respostas do Qwen ainda são tarefas pendentes, sem dependência de um aplicativo separado planejada para a solução final.
+- A voz depende de haver **reconhecimento de fala no dispositivo** e **um motor TTS português** instalados/configurados no Android. Caso o reconhecimento offline não esteja disponível, a bolha informa a limitação e hiberna; não transfere automaticamente o áudio para a nuvem. O sintetizador Android pode soar diferente da voz Pocket TTS. O assistente **não reage a ruídos** enquanto hiberna. Android pode suspender serviços de primeiro plano; não reinicia após forçar parada ou reiniciar o telefone. A integração da voz Kyutai Pocket TTS nativa continua pendente.
+- **Atualização do APK:** o código marca esta revisão como **v0.2.0 (versionCode 2)**. Não desinstale uma versão antiga antes de proteger o modelo e histórico; APKs debug de execuções CI diferentes podem ter chaves de assinatura distintas e não atualizar uns aos outros.
 
 ## Licenças e origens
 

@@ -86,7 +86,7 @@ class MainActivity : AppCompatActivity() {
         if (result[Manifest.permission.RECORD_AUDIO] == true ||
             ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
         ) startBubbleMode()
-        else Toast.makeText(this, "Sem microfone a bolha não pode escutar sons altos", Toast.LENGTH_LONG).show()
+        else Toast.makeText(this, "Sem microfone a bolha não pode reconhecer sua pergunta", Toast.LENGTH_LONG).show()
         refreshBubbleToggle()
     }
 
@@ -177,7 +177,7 @@ class MainActivity : AppCompatActivity() {
                 withTimeout(30_000) {
                     val state = engine.state.first {
                         it is InferenceEngine.State.Initialized ||
-                            it is InferenceEngine.State.Error
+                            it.isModelLoaded || it is InferenceEngine.State.Error
                     }
                     if (state is InferenceEngine.State.Error) throw state.exception
                 }
@@ -244,9 +244,15 @@ class MainActivity : AppCompatActivity() {
         isReady = false
         refreshComposer()
         // The native engine is a process-wide singleton. Reuse a warm model.
-        if (!engine.state.value.isModelLoaded) {
+        if (engine.state.value is InferenceEngine.State.Initialized) {
             engine.loadModel(file.absolutePath)
             engine.setSystemPrompt(buildSystemPrompt())
+        } else {
+            withTimeout(30_000L) {
+                engine.state.first {
+                    it is InferenceEngine.State.ModelReady || it is InferenceEngine.State.Error
+                }
+            }
         }
         engine.setTemperature(settings.temperature)
         isReady = true
@@ -416,7 +422,14 @@ class MainActivity : AppCompatActivity() {
 
     private fun persistMessages() {
         val snapshot = messages.map { it.copy() }
-        lifecycleScope.launch { runCatching { repository.save(snapshot) } }
+        lifecycleScope.launch {
+            runCatching {
+                // Preserve questions/responses that the floating assistant saved externally.
+                val updated = repository.load().associateBy { it.id }.toMutableMap()
+                snapshot.forEach { updated[it.id] = it }
+                repository.save(updated.values.sortedBy { it.createdAt })
+            }
+        }
     }
 
     private fun updateEmptyState() {
@@ -454,7 +467,8 @@ class MainActivity : AppCompatActivity() {
             .setMessage("A bolha ficará visível sobre outros aplicativos, mas o microfone permanecerá " +
                 "desligado até você tocar nela. Após a saudação, ele escutará por 10 segundos " +
                 "e voltará a hibernar automaticamente. Outro toque cancela a escuta. " +
-                "Não reage a ruídos altos, não salva áudios e ainda não transcreve a fala. " +
+                "Não reage a ruídos altos: reconhece sua pergunta pelo serviço offline do Android, " +
+                "consulta o Qwen local e fala a resposta em partes. Não salva áudios. " +
                 "Para desativar, toque novamente neste botão ou em 'Desativar' na notificação.")
             .setNegativeButton("Cancelar", null)
             .setPositiveButton("Ativar") { _, _ -> requestBubblePermissions() }
@@ -489,14 +503,15 @@ class MainActivity : AppCompatActivity() {
 
     private fun showBubbleHelp() {
         MaterialAlertDialogBuilder(this)
-            .setTitle("Pocket TTS + bolha EduAgent")
+            .setTitle("Bolha de voz EduAgent")
             .setMessage("Toque na bolha para ouvir 'Opa, oi, tudo bem? Quer ajuda?'. " +
                 "Em seguida, o microfone liga por 10 segundos, com contagem regressiva na bolha. " +
                 "Toque outra vez para hibernar imediatamente; arraste para mudar de lugar. " +
                 "Sem tocar, o microfone fica desligado.\n\n" +
-                "A saudação utiliza a voz disponível no Android; o Pocket TTS nativo ainda " +
-                "precisa ser incorporado ao APK. A escuta temporizada ainda não transforma " +
-                "fala em texto. Nenhuma conversa ou áudio é enviado a um serviço externo.")
+                "A voz usa o sintetizador instalado no Android; o Pocket TTS nativo ainda " +
+                "não está incorporado ao APK. A fala vira texto usando reconhecimento no próprio " +
+                "aparelho (se disponível), passa ao Qwen e a resposta fica salva no chat. " +
+                "O áudio não é enviado a um servidor pelo EduAgent.")
             .setPositiveButton("Entendi", null)
             .show()
     }
@@ -670,7 +685,8 @@ class MainActivity : AppCompatActivity() {
                 .setTitle("Modelos locais")
                 .setMessage("Qwen2.5 1.5B (chat)\n$qwenStatus\n\n" +
                     "SmolVLM 500M Q4 (visão)\n$visualStatus\n\n" +
-                    "Voz / Pocket TTS\nSaudação usa voz Android; Pocket TTS nativo pendente de integração\n\n" +
+                    "Voz (Android offline)\nReconhecimento local, resposta do Qwen, áudio em partes\n" +
+                    "Pocket TTS nativo: ainda não integrado\n\n" +
                     "A análise por @VLM acontece no aparelho. A foto é escolhida pelo botão +.")
                 .setNegativeButton("Fechar", null)
                 .setNeutralButton("Sobre") { _, _ -> showModelInfo() }
@@ -761,6 +777,19 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         refreshBubbleToggle()
+        if (::repository.isInitialized && generationJob?.isActive != true) {
+            lifecycleScope.launch {
+                val updated = runCatching { repository.load() }.getOrNull() ?: return@launch
+                val newMessages = updated.filter { saved -> messages.none { it.id == saved.id } }
+                if (newMessages.isNotEmpty()) {
+                    messages.addAll(newMessages)
+                    messages.sortBy { it.createdAt }
+                    adapter.notifyDataSetChanged()
+                    updateEmptyState()
+                    list.scrollToPosition(messages.lastIndex)
+                }
+            }
+        }
     }
 
     override fun onStop() {

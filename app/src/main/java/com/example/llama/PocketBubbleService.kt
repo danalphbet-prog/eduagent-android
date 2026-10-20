@@ -1,7 +1,6 @@
 package com.example.llama
 
 import android.Manifest
-import android.annotation.SuppressLint
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -14,13 +13,14 @@ import android.content.pm.ServiceInfo
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.drawable.GradientDrawable
-import android.media.AudioFormat
-import android.media.AudioRecord
-import android.media.MediaRecorder
+import android.os.Bundle
 import android.os.IBinder
 import android.os.CountDownTimer
 import android.os.Handler
 import android.provider.Settings
+import android.speech.RecognitionListener
+import android.speech.RecognizerIntent
+import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.view.Gravity
@@ -30,19 +30,34 @@ import android.view.WindowManager
 import android.widget.TextView
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
+import com.arm.aichat.AiChat
+import com.arm.aichat.InferenceEngine
+import com.arm.aichat.isModelLoaded
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
 import java.util.Locale
+import java.util.UUID
 
 /**
- * Opt-in floating assistant. The microphone stays closed while hibernating;
- * tapping the bubble starts a finite listening window after the greeting.
- * No audio is stored, transcribed, or transmitted.
+ * Opt-in floating assistant. Microphone is closed while hibernating. A tap
+ * triggers a fixed greeting, a 10s on-device recognition window, local Qwen
+ * inference, and speech synthesis in sentence-sized chunks. No raw audio is
+ * saved or sent to a server. Pocket TTS native is NOT bundled yet.
  */
 class PocketBubbleService : Service() {
     private val manager by lazy { getSystemService(WINDOW_SERVICE) as WindowManager }
     private var bubble: TextView? = null
-    private var recorder: AudioRecord? = null
-    private var microphoneThread: Thread? = null
-    @Volatile private var listening = false
+    private var recognizer: SpeechRecognizer? = null
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private var replyJob: Job? = null
     private val mainHandler by lazy { Handler(mainLooper) }
     private var listeningTimer: CountDownTimer? = null
     private var greetingFallback: Runnable? = null
@@ -50,7 +65,11 @@ class PocketBubbleService : Service() {
     private var greetingTts: TextToSpeech? = null
     private var ttsReady = false
     private var greetingPending = false
-    private enum class VoiceState { HIBERNATING, GREETING, LISTENING }
+    private var speechPiecesPending = 0
+    private var finishedGenerating = false
+    private var queuedAnyReply = false
+    private var speechSequence = 0
+    private enum class VoiceState { HIBERNATING, GREETING, LISTENING, THINKING, SPEAKING }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -198,9 +217,13 @@ class PocketBubbleService : Service() {
                 VoiceState.HIBERNATING -> "✦"
                 VoiceState.GREETING -> "●"
                 VoiceState.LISTENING -> secondsLeft.toString()
+                VoiceState.THINKING -> "…"
+                VoiceState.SPEAKING -> "♫"
             }
             background = GradientDrawable(GradientDrawable.Orientation.TL_BR,
                 if (voiceState == VoiceState.LISTENING) intArrayOf(0xFFDD4E60.toInt(), 0xFFF48C5C.toInt())
+                else if (voiceState == VoiceState.THINKING || voiceState == VoiceState.SPEAKING)
+                    intArrayOf(0xFF279D9B.toInt(), 0xFF546DCB.toInt())
                 else intArrayOf(0xFF496EEB.toInt(), 0xFF9169DC.toInt())).apply {
                     shape = GradientDrawable.OVAL
                     setStroke(dp(2), Color.WHITE)
@@ -212,9 +235,45 @@ class PocketBubbleService : Service() {
         if (voiceState != VoiceState.GREETING) return
         greetingFallback?.let { mainHandler.removeCallbacks(it) }
         greetingFallback = null
+        if (!SpeechRecognizer.isOnDeviceRecognitionAvailable(this)) {
+            reportUnavailable("Este celular não disponibiliza reconhecimento de fala offline.")
+            return
+        }
         voiceState = VoiceState.LISTENING
         updateBubbleAppearance()
-        beginListening()
+        try {
+            recognizer = SpeechRecognizer.createOnDeviceSpeechRecognizer(this).apply {
+                setRecognitionListener(object : RecognitionListener {
+                    override fun onReadyForSpeech(params: Bundle?) = Unit
+                    override fun onBeginningOfSpeech() = Unit
+                    override fun onRmsChanged(rmsdB: Float) = Unit
+                    override fun onBufferReceived(buffer: ByteArray?) = Unit
+                    override fun onEndOfSpeech() = Unit
+                    override fun onPartialResults(partialResults: Bundle?) = Unit
+                    override fun onEvent(eventType: Int, params: Bundle?) = Unit
+
+                    override fun onError(error: Int) {
+                        if (voiceState == VoiceState.LISTENING) hibernate()
+                    }
+
+                    override fun onResults(results: Bundle?) {
+                        if (voiceState != VoiceState.LISTENING) return
+                        val words = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                            ?.firstOrNull()?.trim().orEmpty()
+                        if (words.isBlank()) hibernate() else answerSpokenQuestion(words)
+                    }
+                })
+                startListening(Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                    putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                    putExtra(RecognizerIntent.EXTRA_LANGUAGE, "pt-BR")
+                    putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
+                    putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+                })
+            }
+        } catch (e: Exception) {
+            reportUnavailable("Não foi possível iniciar a escuta: ${e.message ?: "erro desconhecido"}")
+            return
+        }
         listeningTimer = object : CountDownTimer(LISTEN_DURATION_MS, 1000L) {
             override fun onTick(millisUntilFinished: Long) {
                 if (voiceState == VoiceState.LISTENING)
@@ -231,12 +290,147 @@ class PocketBubbleService : Service() {
         greetingFallback = null
         listeningTimer?.cancel()
         listeningTimer = null
-        stopListening()
+        stopRecognition()
+        replyJob?.cancel()
+        replyJob = null
+        speechPiecesPending = 0
+        finishedGenerating = false
+        queuedAnyReply = false
         greetingTts?.stop()
         updateBubbleAppearance()
     }
 
-    /** Only this public, fixed greeting uses the Android system voice; no chat text is shared. */
+    private fun stopRecognition() {
+        val previous = recognizer
+        recognizer = null
+        runCatching { previous?.cancel() }
+        runCatching { previous?.destroy() }
+    }
+
+    private fun reportUnavailable(reason: String) {
+        hibernate()
+        android.widget.Toast.makeText(this, reason, android.widget.Toast.LENGTH_LONG).show()
+        if (ttsReady) greetingTts?.speak(reason, TextToSpeech.QUEUE_FLUSH, null, "eduagent_voice_error")
+    }
+
+    /** The voice conversation uses the same Qwen model and history as the text chat. */
+    private fun answerSpokenQuestion(question: String) {
+        listeningTimer?.cancel()
+        listeningTimer = null
+        stopRecognition()
+        voiceState = VoiceState.THINKING
+        updateBubbleAppearance()
+
+        replyJob = serviceScope.launch {
+            try {
+                val historyStore = LocalChatRepository(applicationContext)
+                val history = historyStore.load()
+                val currentSettings = AiSettings.load(applicationContext)
+                val model = ModelRepository(applicationContext).verifiedModelOrNull()
+                if (model == null) {
+                    reportUnavailable("Abra o EduAgent e baixe o Qwen para conversar por voz.")
+                    return@launch
+                }
+
+                val engine = AiChat.getInferenceEngine(applicationContext)
+                val readyState = withTimeout(30_000L) {
+                    engine.state.first {
+                        it is InferenceEngine.State.Initialized ||
+                            it.isModelLoaded || it is InferenceEngine.State.Error
+                    }
+                }
+                if (readyState is InferenceEngine.State.Error) throw readyState.exception
+                if (readyState is InferenceEngine.State.Initialized) {
+                    engine.loadModel(model.absolutePath)
+                    engine.setSystemPrompt(
+                        "Você é EduAgent, tutor gentil e direto. Converse em português do Brasil, " +
+                            "com respostas curtas e naturais, adequadas para serem ouvidas. " +
+                            "Não invente informações."
+                    )
+                }
+                if (engine.state.value !is InferenceEngine.State.ModelReady) {
+                    reportUnavailable("O modelo está ocupado. Tente tocar na bolha novamente.")
+                    return@launch
+                }
+                engine.setTemperature(currentSettings.temperature)
+
+                val prompt = ConversationBridge.forQwen(history, question, currentSettings)
+                val fullReply = StringBuilder()
+                val unsaid = StringBuilder()
+                speechPiecesPending = 0
+                finishedGenerating = false
+                queuedAnyReply = false
+                engine.sendUserPrompt(prompt, currentSettings.qwenMaxTokens).collect { part ->
+                    if (voiceState == VoiceState.HIBERNATING) throw CancellationException("Bolha pausada")
+                    fullReply.append(part)
+                    unsaid.append(part)
+                    speakCompletedPhrases(unsaid)
+                }
+                speakRemaining(unsaid)
+
+                val answer = fullReply.toString().trim().ifBlank {
+                    "Não consegui gerar uma resposta agora. Tente novamente."
+                }
+                // Load again just before writing, to preserve messages saved while generating.
+                val updatedHistory = historyStore.load()
+                historyStore.save(updatedHistory + listOf(
+                    Message(id = UUID.randomUUID().toString(), content = question, isUser = true),
+                    Message(id = UUID.randomUUID().toString(), content = answer,
+                        isUser = false, modelName = ModelRepository.MODEL_NAME)
+                ))
+                if (!queuedAnyReply) speakPiece(answer)
+                finishedGenerating = true
+                if (speechPiecesPending == 0) hibernate()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (e: Exception) {
+                reportUnavailable("Não consegui responder: ${e.message ?: "erro na IA"}")
+            }
+        }
+    }
+
+    private fun speakCompletedPhrases(buffer: StringBuilder) {
+        while (buffer.isNotEmpty()) {
+            // Prefer natural pause marks; cap unpunctuated text to keep latency bounded.
+            val punctuationAt = buffer.indexOfFirst { it == '.' || it == '!' || it == '?' || it == ';' || it == '\n' }
+            val splitAt = when {
+                punctuationAt >= 0 -> punctuationAt + 1
+                buffer.length >= 160 -> buffer.lastIndexOf(' ', 160).takeIf { it >= 60 } ?: 160
+                else -> break
+            }
+            val phrase = buffer.substring(0, splitAt).trim()
+            buffer.delete(0, splitAt)
+            if (phrase.isNotBlank()) speakPiece(phrase)
+        }
+    }
+
+    private fun speakRemaining(buffer: StringBuilder) {
+        val phrase = buffer.toString().trim()
+        buffer.clear()
+        if (phrase.isNotBlank()) speakPiece(phrase)
+    }
+
+    private fun speakPiece(phrase: String) {
+        if (voiceState == VoiceState.HIBERNATING || !ttsReady) return
+        val synthesizer = greetingTts ?: return
+        voiceState = VoiceState.SPEAKING
+        updateBubbleAppearance()
+        val utteranceId = "eduagent_reply_${++speechSequence}"
+        speechPiecesPending++
+        val status = synthesizer.speak(phrase, TextToSpeech.QUEUE_ADD, null, utteranceId)
+        if (status == TextToSpeech.ERROR) speechPiecesPending-- else queuedAnyReply = true
+    }
+
+    private fun onReplyPartDone(utteranceId: String) {
+        if (!utteranceId.startsWith("eduagent_reply_")) return
+        mainHandler.post {
+            if (voiceState == VoiceState.HIBERNATING) return@post
+            speechPiecesPending = (speechPiecesPending - 1).coerceAtLeast(0)
+            if (finishedGenerating && speechPiecesPending == 0) hibernate()
+        }
+    }
+
+    /** Android's installed pt-BR voice; native Pocket TTS is not yet packaged. */
     private fun prepareGreetingVoice() {
         if (greetingTts != null) return
         greetingTts = TextToSpeech(this, { result ->
@@ -252,9 +446,15 @@ class PocketBubbleService : Service() {
         })
         greetingTts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
             override fun onStart(utteranceId: String) = Unit
-            override fun onDone(utteranceId: String) = finishedGreeting(utteranceId)
+            override fun onDone(utteranceId: String) {
+                finishedGreeting(utteranceId)
+                onReplyPartDone(utteranceId)
+            }
             @Deprecated("Deprecated in Android")
-            override fun onError(utteranceId: String) = finishedGreeting(utteranceId)
+            override fun onError(utteranceId: String) {
+                finishedGreeting(utteranceId)
+                onReplyPartDone(utteranceId)
+            }
         })
     }
 
@@ -270,50 +470,9 @@ class PocketBubbleService : Service() {
         )
     }
 
-    @SuppressLint("MissingPermission")
-    private fun beginListening() {
-        val minBytes = AudioRecord.getMinBufferSize(SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
-        if (minBytes <= 0) return
-        try {
-            val audioRecord = AudioRecord(
-                MediaRecorder.AudioSource.MIC, SAMPLE_RATE,
-                AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT,
-                maxOf(minBytes * 2, 4096)
-            )
-            if (audioRecord.state != AudioRecord.STATE_INITIALIZED) {
-                audioRecord.release()
-                return
-            }
-            audioRecord.startRecording()
-            recorder = audioRecord
-            listening = true
-            microphoneThread = Thread({
-                val pcm = ShortArray(1024)
-                while (listening && !Thread.currentThread().isInterrupted) {
-                    val count = audioRecord.read(pcm, 0, pcm.size)
-                    if (count <= 0) break
-                    // PCM is intentionally discarded. Integrate an in-app offline STT
-                    // before treating sound as a recognized user request.
-                }
-            }, "eduagent-timed-listening").apply { start() }
-        } catch (_: Exception) {
-            recorder?.release()
-            recorder = null
-            listening = false
-        }
-    }
-
-    private fun stopListening() {
-        listening = false
-        microphoneThread?.interrupt()
-        runCatching { recorder?.stop() }
-        runCatching { recorder?.release() }
-        microphoneThread = null
-        recorder = null
-    }
-
     override fun onDestroy() {
         hibernate()
+        serviceScope.cancel()
         bubble?.let { runCatching { manager.removeView(it) } }
         bubble = null
         greetingTts?.shutdown()
@@ -333,7 +492,6 @@ class PocketBubbleService : Service() {
         private const val PREF_Y = "y"
         private const val CHANNEL_ID = "pocket_bubble_listening"
         private const val NOTIFICATION_ID = 301
-        private const val SAMPLE_RATE = 16_000
         private const val LISTEN_DURATION_MS = 10_000L
 
         fun preferences(context: Context) = context.getSharedPreferences("eduagent_pocket_bubble", Context.MODE_PRIVATE)

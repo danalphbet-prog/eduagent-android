@@ -35,7 +35,7 @@
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="EduAgent"
+                android:text="EduAgent · 0.2"
                 android:textColor="#1C2642"
                 android:textStyle="bold"
                 android:textSize="18sp" />
@@ -61,9 +61,12 @@
             android:layout_width="44dp"
             android:layout_height="44dp"
             android:gravity="center"
+            android:background="#E8EDFC"
+            android:clickable="true"
+            android:focusable="true"
             android:text="⚙"
             android:textColor="#4E60A0"
-            android:textSize="24sp"
+            android:textSize="28sp"
             android:contentDescription="Configurações da IA" />
     </LinearLayout>
 

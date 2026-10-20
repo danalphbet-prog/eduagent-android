@@ -9,3 +9,5 @@ captures/
 *.apk
 *.aab
 third_party/llama.cpp/
+pockettts/src/main/jniLibs/
+pockettts/src/main/third_party/

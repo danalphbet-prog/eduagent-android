@@ -8,7 +8,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 80
+    timeout-minutes: 120
     permissions:
       contents: read
     steps:
@@ -25,7 +25,9 @@ jobs:
           java-version: '17'
       - uses: android-actions/setup-android@v4
       - name: Instalar SDK, NDK e CMake
-        run: sdkmanager --install "platforms;android-36" "build-tools;36.0.0" "ndk;29.0.13113456" "cmake;3.31.6"
+        run: sdkmanager --install "platforms;android-36" "build-tools;36.0.0" "ndk;29.0.13113456" "ndk;27.2.12479018" "cmake;3.31.6" "cmake;3.22.1"
+      - name: Preparar ONNX Runtime do Pocket TTS
+        run: bash ./scripts/prepare_pocket_native_deps.sh
       - name: Compilar APK debug
         run: ./gradlew :app:testDebugUnitTest :app:assembleDebug --no-daemon
       - uses: actions/upload-artifact@v4

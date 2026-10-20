@@ -17,14 +17,13 @@
         android:background="#F8FAFF"
         android:elevation="3dp"
         android:orientation="horizontal">
-        <TextView
+        <ImageView
             android:layout_width="42dp"
             android:layout_height="42dp"
             android:background="@drawable/bg_agent_avatar"
-            android:gravity="center"
-            android:text="✦"
-            android:textColor="#FFFFFF"
-            android:textSize="23sp"
+            android:padding="9dp"
+            android:src="@drawable/ic_lucide_sparkles"
+            android:tint="#FFFFFF"
             android:contentDescription="EduAgent" />
         <LinearLayout
             android:layout_width="0dp"
@@ -35,7 +34,7 @@
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="EduAgent · 0.3"
+                android:text="EduAgent · 0.6"
                 android:textColor="#1C2642"
                 android:textStyle="bold"
                 android:textSize="18sp" />
@@ -47,26 +46,26 @@
                 android:textColor="#6B7894"
                 android:textSize="12sp" />
         </LinearLayout>
-        <TextView
+        <ImageView
             android:id="@+id/model_info"
             android:layout_width="44dp"
             android:layout_height="44dp"
-            android:gravity="center"
-            android:text="☷"
-            android:textColor="#4E60A0"
-            android:textSize="24sp"
+            android:padding="10dp"
+            android:src="@drawable/ic_lucide_brain"
+            android:tint="#4E60A0"
+            android:clickable="true"
+            android:focusable="true"
             android:contentDescription="Gerenciar modelos locais" />
-        <TextView
+        <ImageView
             android:id="@+id/settings_button"
             android:layout_width="44dp"
             android:layout_height="44dp"
-            android:gravity="center"
             android:background="#E8EDFC"
             android:clickable="true"
             android:focusable="true"
-            android:text="⚙"
-            android:textColor="#4E60A0"
-            android:textSize="28sp"
+            android:padding="10dp"
+            android:src="@drawable/ic_lucide_settings"
+            android:tint="#4E60A0"
             android:contentDescription="Configurações da IA" />
     </LinearLayout>
 
@@ -92,7 +91,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="5dp"
-            android:text="Baixe o Qwen2.5 1.5B uma única vez (cerca de 1,12 GB). Depois, o chat funciona sem internet."
+            android:text="Baixe o Qwen2.5 3B uma única vez (cerca de 2,1 GB). Depois, o chat funciona sem internet."
             android:textColor="#53688C"
             android:textSize="13sp" />
         <ProgressBar
@@ -110,6 +109,7 @@
             android:layout_height="wrap_content"
             android:layout_marginTop="10dp"
             android:text="Baixar modelo"
+            app:icon="@drawable/ic_lucide_download"
             app:cornerRadius="16dp" />
     </LinearLayout>
 
@@ -133,12 +133,13 @@
             android:gravity="center"
             android:padding="32dp"
             android:orientation="vertical">
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="✦"
-                android:textColor="#5169DD"
-                android:textSize="52sp" />
+            <ImageView
+                android:layout_width="56dp"
+                android:layout_height="56dp"
+                android:padding="5dp"
+                android:src="@drawable/ic_lucide_sparkles"
+                android:tint="#5169DD"
+                android:contentDescription="" />
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
@@ -189,14 +190,15 @@
                 android:text="Imagem para @VLM"
                 android:textColor="#53688C"
                 android:textSize="13sp" />
-            <TextView
+            <ImageView
                 android:id="@+id/remove_attachment"
                 android:layout_width="44dp"
                 android:layout_height="44dp"
-                android:gravity="center"
-                android:text="✕"
-                android:textColor="#53688C"
-                android:textSize="22sp"
+                android:padding="12dp"
+                android:src="@drawable/ic_lucide_x"
+                android:tint="#53688C"
+                android:clickable="true"
+                android:focusable="true"
                 android:contentDescription="Remover imagem" />
         </LinearLayout>
         <LinearLayout
@@ -206,29 +208,27 @@
             android:gravity="center_vertical"
             android:paddingStart="14dp"
             android:paddingEnd="12dp"
-            android:paddingTop="11dp"
-            android:paddingBottom="11dp">
-            <com.google.android.material.button.MaterialButton
+            android:paddingTop="8dp"
+            android:paddingBottom="8dp">
+            <ImageButton
                 android:id="@+id/attach_button"
                 android:layout_gravity="center_vertical"
                 android:layout_width="46dp"
-                android:layout_height="49dp"
+                android:layout_height="52dp"
                 android:layout_marginEnd="6dp"
-                android:minWidth="0dp"
-                android:minHeight="0dp"
-                android:padding="0dp"
-                android:text="+"
-                android:textSize="27sp"
-                android:textColor="#526EE3"
+                android:background="@drawable/bg_composer_action"
+                android:padding="12dp"
+                android:src="@drawable/ic_lucide_plus"
+                android:tint="#526EE3"
+                android:scaleType="centerInside"
                 android:contentDescription="Escolher imagem do celular"
-                app:backgroundTint="#E8EDFC"
-                app:cornerRadius="18dp" />
+                />
             <EditText
                 android:id="@+id/user_input"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
-                android:minHeight="49dp"
+                android:minHeight="52dp"
                 android:minLines="1"
                 android:maxLines="4"
                 android:paddingStart="17dp"
@@ -243,35 +243,32 @@
                 android:textColor="#273552"
                 android:textColorHint="#92A0B8"
                 android:textSize="15sp" />
-            <com.google.android.material.button.MaterialButton
+            <ImageButton
                 android:id="@+id/voice_bubble_button"
                 android:layout_gravity="center_vertical"
                 android:layout_width="46dp"
-                android:layout_height="49dp"
+                android:layout_height="52dp"
                 android:layout_marginStart="7dp"
-                android:minWidth="0dp"
-                android:minHeight="0dp"
-                android:padding="0dp"
-                android:text="◉"
-                android:textSize="23sp"
-                android:textColor="#526EE3"
+                android:background="@drawable/bg_composer_action"
+                android:padding="12dp"
+                android:src="@drawable/ic_lucide_mic"
+                android:tint="#526EE3"
+                android:scaleType="centerInside"
                 android:contentDescription="Ativar assistente flutuante com voz"
-                app:backgroundTint="#E8EDFC"
-                app:cornerRadius="18dp" />
-            <com.google.android.material.button.MaterialButton
+                />
+            <ImageButton
                 android:id="@+id/send_button"
                 android:layout_gravity="center_vertical"
                 android:layout_width="54dp"
-                android:layout_height="49dp"
+                android:layout_height="52dp"
                 android:layout_marginStart="9dp"
-                android:minWidth="0dp"
-                android:minHeight="0dp"
-                android:padding="0dp"
-                android:text="➤"
-                android:textSize="21sp"
-                android:textColor="#FFFFFF"
+                android:background="@drawable/bg_composer_send"
+                android:padding="14dp"
+                android:src="@drawable/ic_lucide_send"
+                android:tint="#FFFFFF"
+                android:scaleType="centerInside"
                 android:contentDescription="Enviar mensagem"
-                app:cornerRadius="19dp" />
+                />
         </LinearLayout>
         <TextView
             android:layout_width="match_parent"

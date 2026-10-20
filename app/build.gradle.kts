@@ -13,8 +13,11 @@ android {
         minSdk = 33
         targetSdk = 36
 
-        versionCode = 4
-        versionName = "0.4.0"
+        // The bundled Pocket native engine currently targets Android ARM64.
+        ndk { abiFilters += "arm64-v8a" }
+
+        versionCode = 6
+        versionName = "0.6.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -40,6 +43,12 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
+    packaging {
+        jniLibs {
+            // Both native modules use the C++ shared runtime.
+            pickFirsts += "lib/arm64-v8a/libc++_shared.so"
+        }
+    }
 }
 
 dependencies {
@@ -49,6 +58,7 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
 
     implementation(project(":lib"))
+    implementation(project(":pockettts"))
 
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)

@@ -12,12 +12,12 @@ import java.security.MessageDigest
 /** Downloaded once, SHA-256 verified, stored in app-private files. No Debian or root. */
 class ModelRepository(private val context: Context) {
     companion object {
-        const val MODEL_NAME = "Qwen2.5-1.5B-Instruct Q4_K_M"
-        private const val FILENAME = "qwen2.5-1.5b-instruct-q4_k_m.gguf"
+        const val MODEL_NAME = "Qwen2.5-3B-Instruct Q4_K_M"
+        private const val FILENAME = "qwen2.5-3b-instruct-q4_k_m.gguf"
         private const val MODEL_URL =
-            "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf"
-        private const val SHA256 = "6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e"
-        private const val APPROX_BYTES = 1_120_000_000L
+            "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf"
+        private const val SHA256 = "626b4a6678b86442240e33df819e00132d3ba7dddfe1cdc4fbb18e0a9615c62d"
+        private const val APPROX_BYTES = 2_100_000_000L
     }
 
     private val modelDir: File
@@ -27,7 +27,7 @@ class ModelRepository(private val context: Context) {
     private val prefs = context.getSharedPreferences("local_models_v1", Context.MODE_PRIVATE)
 
     suspend fun verifiedModelOrNull(): File? = withContext(Dispatchers.IO) {
-        if (!file.exists() || file.length() < 1_000_000_000L) return@withContext null
+        if (!file.exists() || file.length() < 1_900_000_000L) return@withContext null
         if (prefs.getString("verified_sha", null) == SHA256) return@withContext file
         if (checkSha(file)) {
             prefs.edit().putString("verified_sha", SHA256).apply()
@@ -43,7 +43,7 @@ class ModelRepository(private val context: Context) {
             val existing = partial.takeIf { it.exists() }?.length() ?: 0L
             val minimumFree = (APPROX_BYTES - existing).coerceAtLeast(0L) + 200_000_000L
             require(modelDir.usableSpace > minimumFree) {
-                "Espaço insuficiente. Libere aproximadamente 1,5 GB para instalar a IA."
+                "Espaço insuficiente. Libere aproximadamente 2,5 GB para instalar a IA 3B."
             }
 
             val conn = (URL(MODEL_URL).openConnection() as HttpURLConnection).apply {
@@ -51,7 +51,7 @@ class ModelRepository(private val context: Context) {
                 readTimeout = 60_000
                 instanceFollowRedirects = true
                 setRequestProperty("Accept-Encoding", "identity")
-                setRequestProperty("User-Agent", "EduAgent-Android/0.1")
+                setRequestProperty("User-Agent", "EduAgent-Android/0.6")
                 if (existing > 0) setRequestProperty("Range", "bytes=$existing-")
             }
 

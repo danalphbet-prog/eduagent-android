@@ -10,7 +10,10 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.PixelFormat
 import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
@@ -50,8 +53,8 @@ import java.util.UUID
  * Opt-in floating assistant. Microphone is closed while hibernating. A tap
  * triggers a fixed greeting, a 10s on-device recognition window, local Qwen
  * inference, and speech synthesis in sentence-sized chunks. No raw audio is
- * saved or sent to a server. Prefers a locally installed Kyutai Pocket TTS
- * system engine; self-contained Pocket model weights are not bundled yet.
+ * saved or sent to a server. The native Pocket TTS engine ships in EduAgent;
+ * its voice weights are downloaded separately in app settings.
  */
 class PocketBubbleService : Service() {
     private val manager by lazy { getSystemService(WINDOW_SERVICE) as WindowManager }
@@ -72,6 +75,37 @@ class PocketBubbleService : Service() {
     private var queuedAnyReply = false
     private var speechSequence = 0
     private enum class VoiceState { HIBERNATING, GREETING, LISTENING, THINKING, SPEAKING }
+
+    /** A geometric star centered by coordinates, independent of glyph/font metrics. */
+    private class BubbleFaceView(context: Context) : TextView(context) {
+        var showStar: Boolean = true
+            set(value) {
+                field = value
+                invalidate()
+            }
+        private val starPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE
+            style = Paint.Style.FILL
+        }
+
+        override fun onDraw(canvas: Canvas) {
+            super.onDraw(canvas)
+            if (!showStar) return
+            val cx = width / 2f
+            val cy = height / 2f
+            val radius = resources.displayMetrics.density * 13f
+            val waist = radius * 0.18f
+            val path = Path().apply {
+                moveTo(cx, cy - radius)
+                quadTo(cx + waist, cy - waist, cx + radius, cy)
+                quadTo(cx + waist, cy + waist, cx, cy + radius)
+                quadTo(cx - waist, cy + waist, cx - radius, cy)
+                quadTo(cx - waist, cy - waist, cx, cy - radius)
+                close()
+            }
+            canvas.drawPath(path, starPaint)
+        }
+    }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -132,10 +166,11 @@ class PocketBubbleService : Service() {
 
     private fun showBubble() {
         val diameter = dp(56)
-        val view = TextView(this).apply {
-            text = "✦"
+        val view = BubbleFaceView(this).apply {
+            text = ""
             textSize = 29f
             gravity = Gravity.CENTER
+            includeFontPadding = false
             setTextColor(Color.WHITE)
             contentDescription = "Bolha EduAgent. Toque para conversar por 10 segundos. Toque novamente para hibernar. Arraste para mover."
             elevation = dp(8).toFloat()
@@ -215,8 +250,9 @@ class PocketBubbleService : Service() {
 
     private fun updateBubbleAppearance(secondsLeft: Int = 10) {
         bubble?.apply {
+            (this as? BubbleFaceView)?.showStar = voiceState == VoiceState.HIBERNATING
             text = when (voiceState) {
-                VoiceState.HIBERNATING -> "✦"
+                VoiceState.HIBERNATING -> ""
                 VoiceState.GREETING -> "●"
                 VoiceState.LISTENING -> secondsLeft.toString()
                 VoiceState.THINKING -> "…"
@@ -450,19 +486,17 @@ class PocketBubbleService : Service() {
         }
     }
 
-    /** Prefers community Pocket TTS engine when a Portuguese voice has been imported. */
+    /** Uses the native engine inside EduAgent after a Portuguese voice is downloaded. */
     private fun prepareGreetingVoice() {
         if (greetingTts != null) return
-        val pocketAvailable = packageManager.queryIntentServices(
-            Intent(TextToSpeech.Engine.INTENT_ACTION_TTS_SERVICE).setPackage(POCKET_ENGINE_PACKAGE), 0
-        ).isNotEmpty()
-        initializeSpeechEngine(if (pocketAvailable) POCKET_ENGINE_PACKAGE else null)
+        val pocketAvailable = org.pockettts.android.engine.EmbeddedPocketTts.isReady(this)
+        initializeSpeechEngine(if (pocketAvailable) packageName else null)
     }
 
     private fun initializeSpeechEngine(preferred: String?) {
         val listener = TextToSpeech.OnInitListener { result ->
             usingPocketVoice = result == TextToSpeech.SUCCESS &&
-                preferred == POCKET_ENGINE_PACKAGE
+                preferred == packageName
             val br = if (result == TextToSpeech.SUCCESS)
                 greetingTts?.setLanguage(Locale("pt", "BR")) else null
             val languageState = if (br == TextToSpeech.LANG_MISSING_DATA ||
@@ -528,7 +562,6 @@ class PocketBubbleService : Service() {
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density + 0.5f).toInt()
 
     companion object {
-        const val POCKET_ENGINE_PACKAGE = "org.pockettts.android.engine"
         const val ACTION_START = "com.eduagent.localchat.START_POCKET_BUBBLE"
         const val ACTION_STOP = "com.eduagent.localchat.STOP_POCKET_BUBBLE"
         const val PREF_ACTIVE = "active"

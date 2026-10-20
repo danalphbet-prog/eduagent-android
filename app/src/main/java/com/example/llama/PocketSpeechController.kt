@@ -1,7 +1,6 @@
 package com.example.llama
 
 import android.content.Context
-import android.content.Intent
 import android.os.Handler
 import android.os.Looper
 import android.speech.tts.TextToSpeech
@@ -9,8 +8,9 @@ import android.speech.tts.UtteranceProgressListener
 import java.util.ArrayDeque
 import java.util.Locale
 import java.util.UUID
+import org.pockettts.android.engine.EmbeddedPocketTts
 
-/** Streams complete phrases into an installed Pocket TTS Android engine. */
+/** Streams completed phrases to the Pocket TTS engine embedded in this APK. */
 class PocketSpeechController(
     context: Context,
     private val onStatus: (String) -> Unit = {}
@@ -26,7 +26,7 @@ class PocketSpeechController(
     fun begin(): Boolean {
         cancel()
         if (!isInstalled(appContext)) {
-            onStatus("Pocket TTS não instalado. Abra Configurações > Voz Pocket TTS.")
+            onStatus("Baixe o modelo Pocket TTS na engrenagem do EduAgent.")
             return false
         }
         val current = session
@@ -35,7 +35,7 @@ class PocketSpeechController(
                 if (current != session) return@post
                 val tts = synthesizer ?: return@post
                 if (result != TextToSpeech.SUCCESS) {
-                    onStatus("Falha ao iniciar Pocket TTS; confira o aplicativo e o modelo.")
+                    onStatus("Falha ao iniciar Pocket TTS; confira os pesos de voz.")
                     return@post
                 }
                 // Portuguese packs may advertise pt-PT, not pt-BR.
@@ -47,10 +47,11 @@ class PocketSpeechController(
                 if (ready) {
                     onStatus("Motor Pocket conectado · iniciando síntese")
                     drain()
-                } else onStatus("Instale e selecione o pacote português no Pocket TTS.")
+                } else onStatus("Baixe e selecione o pacote português na engrenagem.")
             }
         }
-        synthesizer = TextToSpeech(appContext, listener, ENGINE_PACKAGE)
+        // Service and JNI runtime are packaged inside EduAgent itself.
+        synthesizer = TextToSpeech(appContext, listener, appContext.packageName)
         synthesizer?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
             override fun onStart(utteranceId: String) = Unit
             override fun onDone(utteranceId: String) = Unit
@@ -102,13 +103,7 @@ class PocketSpeechController(
     }
 
     companion object {
-        const val ENGINE_PACKAGE = "org.pockettts.android.engine"
-        const val ENGINE_APK_URL = "https://github.com/The-unknown-Shadowman/PocketTTS-Android-Engine/releases/download/v0.5.3/PocketTTS-Android-Engine-0.5.3.apk"
-        const val PORTUGUESE_PACK_URL = "https://github.com/The-unknown-Shadowman/PocketTTS-Android-Engine/releases/download/v0.5.3/PocketTTS-portuguese-FP32.zip"
-
         fun isInstalled(context: Context): Boolean =
-            context.packageManager.queryIntentServices(
-                Intent(TextToSpeech.Engine.INTENT_ACTION_TTS_SERVICE).setPackage(ENGINE_PACKAGE), 0
-            ).isNotEmpty()
+            EmbeddedPocketTts.isReady(context)
     }
 }

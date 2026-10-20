@@ -35,7 +35,7 @@
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="EduAgent · 0.2"
+                android:text="EduAgent · 0.3"
                 android:textColor="#1C2642"
                 android:textStyle="bold"
                 android:textSize="18sp" />
@@ -203,13 +203,14 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="horizontal"
-            android:gravity="bottom|center_vertical"
+            android:gravity="center_vertical"
             android:paddingStart="14dp"
             android:paddingEnd="12dp"
             android:paddingTop="11dp"
             android:paddingBottom="11dp">
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/attach_button"
+                android:layout_gravity="center_vertical"
                 android:layout_width="46dp"
                 android:layout_height="49dp"
                 android:layout_marginEnd="6dp"
@@ -244,6 +245,7 @@
                 android:textSize="15sp" />
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/voice_bubble_button"
+                android:layout_gravity="center_vertical"
                 android:layout_width="46dp"
                 android:layout_height="49dp"
                 android:layout_marginStart="7dp"
@@ -258,6 +260,7 @@
                 app:cornerRadius="18dp" />
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/send_button"
+                android:layout_gravity="center_vertical"
                 android:layout_width="54dp"
                 android:layout_height="49dp"
                 android:layout_marginStart="9dp"

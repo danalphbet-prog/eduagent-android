@@ -15,42 +15,63 @@ import java.nio.file.StandardCopyOption
 interface ChatRepository {
     suspend fun load(): List<Message>
     suspend fun save(messages: List<Message>)
+    suspend fun mergeAndSave(messages: List<Message>)
 }
 
 class LocalChatRepository(context: Context) : ChatRepository {
     private val history = File(context.filesDir, "chat_history_v1.json")
-    private val lock = Mutex()
+    // Activity and overlay service create separate repositories. One process-wide gate
+    // prevents their independent load/save operations from dropping newer turns.
+    private val lock get() = fileGate
 
     override suspend fun load(): List<Message> = withContext(Dispatchers.IO) {
-        lock.withLock {
-            if (!history.exists()) return@withLock emptyList()
-            runCatching {
-                val array = JSONArray(history.readText())
-                (0 until array.length()).map { i ->
-                    val obj = array.getJSONObject(i)
-                    val stats = obj.optJSONObject("metrics")?.let { m ->
-                        MessageMetrics(
-                            m.optLong("promptTokens"), m.optLong("outputTokens"),
-                            m.optLong("prefillMs"), m.optLong("firstTokenMs"), m.optLong("totalMs")
-                        )
-                    }
-                    Message(
-                        id = obj.getString("id"),
-                        content = obj.getString("content"),
-                        isUser = obj.getBoolean("isUser"),
-                        createdAt = obj.optLong("createdAt", System.currentTimeMillis()),
-                        metrics = stats,
-                        completed = obj.optBoolean("completed", true),
-                        attachmentPath = obj.optString("attachmentPath").takeIf { it.isNotBlank() },
-                        modelName = obj.optString("modelName").takeIf { it.isNotBlank() }
-                    )
-                }
-            }.getOrDefault(emptyList())
-        }
+        lock.withLock { readUnlocked() }
     }
 
     override suspend fun save(messages: List<Message>) = withContext(Dispatchers.IO) {
+        lock.withLock { writeUnlocked(messages) }
+    }
+
+    override suspend fun mergeAndSave(messages: List<Message>) = withContext(Dispatchers.IO) {
         lock.withLock {
+            val merged = readUnlocked().associateBy { it.id }.toMutableMap()
+            messages.forEach { incoming ->
+                val saved = merged[incoming.id]
+                // A late snapshot must never downgrade a completed answer to partial.
+                if (saved == null || (!saved.completed || incoming.completed) &&
+                    (incoming.completed || incoming.content.length >= saved.content.length)) {
+                    merged[incoming.id] = incoming
+                }
+            }
+            writeUnlocked(merged.values.sortedWith(compareBy<Message> { it.createdAt }.thenBy { it.id }))
+        }
+    }
+
+    private fun readUnlocked(): List<Message> {
+        if (!history.exists()) return emptyList()
+        val array = JSONArray(history.readText())
+        return (0 until array.length()).map { i ->
+            val obj = array.getJSONObject(i)
+            val stats = obj.optJSONObject("metrics")?.let { m ->
+                MessageMetrics(
+                    m.optLong("promptTokens"), m.optLong("outputTokens"),
+                    m.optLong("prefillMs"), m.optLong("firstTokenMs"), m.optLong("totalMs")
+                )
+            }
+            Message(
+                id = obj.getString("id"),
+                content = obj.getString("content"),
+                isUser = obj.getBoolean("isUser"),
+                createdAt = obj.optLong("createdAt", System.currentTimeMillis()),
+                metrics = stats,
+                completed = obj.optBoolean("completed", true),
+                attachmentPath = obj.optString("attachmentPath").takeIf { it.isNotBlank() },
+                modelName = obj.optString("modelName").takeIf { it.isNotBlank() }
+            )
+        }
+    }
+
+    private fun writeUnlocked(messages: List<Message>) {
             val array = JSONArray()
             messages.forEach { msg ->
                 val obj = JSONObject()
@@ -74,7 +95,10 @@ class LocalChatRepository(context: Context) : ChatRepository {
             val tmp = File(history.parentFile, "chat_history_v1.tmp")
             tmp.writeText(array.toString())
             Files.move(tmp.toPath(), history.toPath(), StandardCopyOption.REPLACE_EXISTING)
-            Unit // ChatRepository.save must return Unit, not the Path from Files.move.
-        }
+            Unit
+    }
+
+    companion object {
+        private val fileGate = Mutex()
     }
 }

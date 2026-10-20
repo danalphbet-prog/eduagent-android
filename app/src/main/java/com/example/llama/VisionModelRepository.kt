@@ -96,7 +96,7 @@ class VisionModelRepository(private val context: Context) {
             readTimeout = 60_000
             instanceFollowRedirects = true
             setRequestProperty("Accept-Encoding", "identity")
-            setRequestProperty("User-Agent", "EduAgent-Android/0.2")
+            setRequestProperty("User-Agent", "EduAgent-Android/0.3")
             if (existing > 0) setRequestProperty("Range", "bytes=$existing-")
         }
 

@@ -14,11 +14,13 @@ import android.view.KeyEvent
 import android.view.View
 import android.view.inputmethod.EditorInfo
 import android.widget.EditText
+import android.widget.ArrayAdapter
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.SeekBar
+import android.widget.Spinner
 import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
@@ -55,6 +57,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var visionRepository: VisionModelRepository
     private lateinit var imageStore: ImageAttachmentStore
     private lateinit var repository: ChatRepository
+    private lateinit var memoryRepository: MemoryRepository
     private lateinit var engine: InferenceEngine
     private lateinit var settings: AiSettings
 
@@ -124,6 +127,7 @@ class MainActivity : AppCompatActivity() {
         imageStore = ImageAttachmentStore(applicationContext)
         settings = AiSettings.load(applicationContext)
         repository = LocalChatRepository(applicationContext)
+        memoryRepository = MemoryRepository(applicationContext)
         list = findViewById(R.id.messages)
         input = findViewById(R.id.user_input)
         send = findViewById(R.id.send_button)
@@ -167,6 +171,7 @@ class MainActivity : AppCompatActivity() {
             val history = repository.load()
             messages.clear()
             messages.addAll(history)
+            runCatching { memoryRepository.load(history, settings) }
             adapter.notifyDataSetChanged()
             updateEmptyState()
             if (messages.isNotEmpty()) list.scrollToPosition(messages.lastIndex)
@@ -261,24 +266,13 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun buildSystemPrompt(): String {
-        val previous = messages.filter { it.completed && it.content.isNotBlank() &&
-            (settings.sharedContext || it.modelName != VisionModelRepository.NAME) }
-            .takeLast(settings.contextMessages)
-            .joinToString("\n") {
-                val role = when {
-                    it.isUser -> "Pessoa"
-                    it.modelName == VisionModelRepository.NAME -> "Tutor visual (transcrição sobre a imagem)"
-                    else -> "Tutor Qwen"
-                }
-                "$role: ${it.content.take(350)}"
-            }
         return """
             Você é EduAgent, um tutor experimental de português brasileiro. Responda claramente,
             em frases curtas e amistosas. Em Matemática, ensine passo a passo e dê pistas antes de
             revelar uma resposta. Nunca invente que viu informações de outras aplicações.
             Você é uma IA e pode errar. Em situações delicadas ou de risco, recomende conversar
             com um adulto responsável. Não peça dados pessoais da criança.
-            ${if (previous.isBlank()) "" else "Contexto recente salvo no aparelho:\n$previous"}
+            A memória persistente e os turnos recentes são anexados à pergunta atual.
         """.trimIndent()
     }
 
@@ -310,21 +304,37 @@ class MainActivity : AppCompatActivity() {
             }
             return
         }
-        val qwenPrompt = ConversationBridge.forQwen(messages, text, settings)
         input.text.clear()
-        val user = Message(UUID.randomUUID().toString(), text, isUser = true)
-        val assistant = Message(UUID.randomUUID().toString(), "", isUser = false, completed = false,
-            modelName = ModelRepository.MODEL_NAME)
-        val startIndex = messages.size
-        messages.add(user)
-        messages.add(assistant)
-        adapter.notifyItemRangeInserted(startIndex, 2)
-        updateEmptyState()
-        list.scrollToPosition(messages.lastIndex)
         refreshComposer(generating = true)
-        persistMessages()
-
         generationJob = lifecycleScope.launch {
+            val transition = runCatching { memoryRepository.process(text, messages.toList(), settings) }
+                .getOrElse {
+                    Toast.makeText(this@MainActivity, "Falha ao guardar memória: ${it.message}", Toast.LENGTH_LONG).show()
+                    refreshComposer()
+                    return@launch
+                }
+            val qwenPrompt = ConversationBridge.forQwen(messages, text, settings, transition.state)
+            val user = Message(UUID.randomUUID().toString(), text, isUser = true)
+            val assistant = Message(UUID.randomUUID().toString(), "", isUser = false, completed = false,
+                modelName = ModelRepository.MODEL_NAME)
+            val startIndex = messages.size
+            messages.add(user)
+            messages.add(assistant)
+            adapter.notifyItemRangeInserted(startIndex, 2)
+            updateEmptyState()
+            list.scrollToPosition(messages.lastIndex)
+            persistMessages()
+            // Checklists have a deterministic response: Qwen must not interpret an item
+            // such as "Janela." as a request for a dictionary definition.
+            if (transition.directReply != null) {
+                assistant.content = transition.directReply
+                assistant.completed = true
+                assistant.metrics = MessageMetrics(0, 0, 0, 0, 0)
+                updateMessage(assistant)
+                persistMessages()
+                refreshComposer()
+                return@launch
+            }
             val started = SystemClock.elapsedRealtime()
             var firstToken = 0L
             val output = StringBuilder()
@@ -370,24 +380,30 @@ class MainActivity : AppCompatActivity() {
         if (generationJob?.isActive == true) return
         val question = text.replaceFirst(Regex("^@VLM\\b\\s*", RegexOption.IGNORE_CASE), "")
             .ifBlank { "O que tem nesta imagem? Descreva em português brasileiro." }
-        val visionPrompt = ConversationBridge.forVision(messages, question, settings)
         input.text.clear()
         pendingImage = null
         attachmentPreview.visibility = View.GONE
-        val user = Message(UUID.randomUUID().toString(), text.ifBlank { "@VLM $question" },
-            isUser = true, attachmentPath = image.absolutePath)
-        val assistant = Message(UUID.randomUUID().toString(), "", isUser = false,
-            completed = false, modelName = VisionModelRepository.NAME)
-        val index = messages.size
-        messages.add(user)
-        messages.add(assistant)
-        adapter.notifyItemRangeInserted(index, 2)
-        updateEmptyState()
-        list.scrollToPosition(messages.lastIndex)
         refreshComposer(generating = true)
-        persistMessages()
-
         generationJob = lifecycleScope.launch {
+            val memory = runCatching {
+                memoryRepository.process(question, messages.toList(), settings).state
+            }.getOrElse {
+                Toast.makeText(this@MainActivity, "Não foi possível carregar memória: ${it.message}", Toast.LENGTH_LONG).show()
+                refreshComposer()
+                return@launch
+            }
+            val visionPrompt = ConversationBridge.forVision(messages, question, settings, memory)
+            val user = Message(UUID.randomUUID().toString(), text.ifBlank { "@VLM $question" },
+                isUser = true, attachmentPath = image.absolutePath)
+            val assistant = Message(UUID.randomUUID().toString(), "", isUser = false,
+                completed = false, modelName = VisionModelRepository.NAME)
+            val index = messages.size
+            messages.add(user)
+            messages.add(assistant)
+            adapter.notifyItemRangeInserted(index, 2)
+            updateEmptyState()
+            list.scrollToPosition(messages.lastIndex)
+            persistMessages()
             val start = SystemClock.elapsedRealtime()
             try {
                 assistant.content = engine.analyzeImage(
@@ -424,10 +440,8 @@ class MainActivity : AppCompatActivity() {
         val snapshot = messages.map { it.copy() }
         lifecycleScope.launch {
             runCatching {
-                // Preserve questions/responses that the floating assistant saved externally.
-                val updated = repository.load().associateBy { it.id }.toMutableMap()
-                snapshot.forEach { updated[it.id] = it }
-                repository.save(updated.values.sortedBy { it.createdAt })
+                repository.mergeAndSave(snapshot)
+                memoryRepository.captureHistory(snapshot, settings)
             }
         }
     }
@@ -468,7 +482,8 @@ class MainActivity : AppCompatActivity() {
                 "desligado até você tocar nela. Após a saudação, ele escutará por 10 segundos " +
                 "e voltará a hibernar automaticamente. Outro toque cancela a escuta. " +
                 "Não reage a ruídos altos: reconhece sua pergunta pelo serviço offline do Android, " +
-                "consulta o Qwen local e fala a resposta em partes. Não salva áudios. " +
+                "consulta o Qwen local e fala a resposta em partes. Prioriza Kyutai Pocket TTS " +
+                "se o motor e a voz pt-BR estiverem instalados, com fallback do sistema. Não salva áudios. " +
                 "Para desativar, toque novamente neste botão ou em 'Desativar' na notificação.")
             .setNegativeButton("Cancelar", null)
             .setPositiveButton("Ativar") { _, _ -> requestBubblePermissions() }
@@ -508,8 +523,9 @@ class MainActivity : AppCompatActivity() {
                 "Em seguida, o microfone liga por 10 segundos, com contagem regressiva na bolha. " +
                 "Toque outra vez para hibernar imediatamente; arraste para mudar de lugar. " +
                 "Sem tocar, o microfone fica desligado.\n\n" +
-                "A voz usa o sintetizador instalado no Android; o Pocket TTS nativo ainda " +
-                "não está incorporado ao APK. A fala vira texto usando reconhecimento no próprio " +
+                "A saída de voz prioriza o motor Kyutai Pocket TTS para Android (se instalado " +
+                "com modelo pt-BR); caso contrário, usa o sintetizador padrão do Android. " +
+                "O runtime Pocket ainda não vem empacotado no APK. A fala vira texto usando reconhecimento no próprio " +
                 "aparelho (se disponível), passa ao Qwen e a resposta fica salva no chat. " +
                 "O áudio não é enviado a um servidor pelo EduAgent.")
             .setPositiveButton("Entendi", null)
@@ -634,6 +650,24 @@ class MainActivity : AppCompatActivity() {
         val bridge = toggle("Compartilhar contexto entre as duas IAs", settings.sharedContext)
         val concise = toggle("Priorizar respostas objetivas", settings.conciseAnswers)
         val reuse = toggle("@VLM pode reutilizar a última foto", settings.reuseLastImage)
+        val memoryLabel = TextView(this).apply {
+            text = "Perfil de memória"
+            textSize = 15f
+            setTextColor(android.graphics.Color.rgb(39, 53, 82))
+            setPadding(0, (12 * dp).toInt(), 0, 0)
+        }
+        content.addView(memoryLabel)
+        val memoryProfile = Spinner(this).apply {
+            val options = listOf("Leve (4 turnos)", "Equilibrado (8 turnos)", "Profunda (até 16 turnos)")
+            adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, options)
+            setSelection(settings.memoryProfile.ordinal)
+        }
+        content.addView(memoryProfile)
+        val pinInstructions = toggle("Manter instruções ativas", settings.keepActiveInstructions)
+        val rememberTasks = toggle("Lembrar tarefas e checklists", settings.rememberTasks)
+        val autoSummarize = toggle("Resumo automático dos turnos antigos", settings.autoSummarize)
+        val ragEnabled = toggle("RAG local: recuperar mensagens antigas", settings.ragEnabled)
+        val ragCount = slider("Lembranças recuperadas por pergunta", 1, 6, 1, settings.ragResults)
 
         val fast = MaterialButton(this).apply {
             text = "Perfil rápido: respostas menores"
@@ -643,6 +677,8 @@ class MainActivity : AppCompatActivity() {
                 memorySize.progress = (4 - 2) / 2
                 creativity.progress = 2
                 concise.isChecked = true
+                memoryProfile.setSelection(MemoryProfile.LIGHT.ordinal)
+                ragCount.progress = 1 // 2 passagens
             }
         }
         content.addView(fast)
@@ -666,6 +702,12 @@ class MainActivity : AppCompatActivity() {
                     sharedContext = bridge.isChecked,
                     conciseAnswers = concise.isChecked,
                     reuseLastImage = reuse.isChecked,
+                    memoryProfile = MemoryProfile.entries[memoryProfile.selectedItemPosition.coerceIn(0, 2)],
+                    keepActiveInstructions = pinInstructions.isChecked,
+                    rememberTasks = rememberTasks.isChecked,
+                    autoSummarize = autoSummarize.isChecked,
+                    ragEnabled = ragEnabled.isChecked,
+                    ragResults = 1 + ragCount.progress,
                 ))
             }
             .show()
@@ -685,8 +727,9 @@ class MainActivity : AppCompatActivity() {
                 .setTitle("Modelos locais")
                 .setMessage("Qwen2.5 1.5B (chat)\n$qwenStatus\n\n" +
                     "SmolVLM 500M Q4 (visão)\n$visualStatus\n\n" +
-                    "Voz (Android offline)\nReconhecimento local, resposta do Qwen, áudio em partes\n" +
-                    "Pocket TTS nativo: ainda não integrado\n\n" +
+                    "Voz (offline)\nReconhecimento local, resposta do Qwen, áudio em partes\n" +
+                    "Kyutai Pocket TTS: usa o motor Android externo quando instalado com pt-BR; " +
+                    "fallback TTS Android. Pesos Pocket ainda não empacotados.\n\n" +
                     "A análise por @VLM acontece no aparelho. A foto é escolhida pelo botão +.")
                 .setNegativeButton("Fechar", null)
                 .setNeutralButton("Sobre") { _, _ -> showModelInfo() }

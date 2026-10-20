@@ -50,7 +50,8 @@ import java.util.UUID
  * Opt-in floating assistant. Microphone is closed while hibernating. A tap
  * triggers a fixed greeting, a 10s on-device recognition window, local Qwen
  * inference, and speech synthesis in sentence-sized chunks. No raw audio is
- * saved or sent to a server. Pocket TTS native is NOT bundled yet.
+ * saved or sent to a server. Prefers a locally installed Kyutai Pocket TTS
+ * system engine; self-contained Pocket model weights are not bundled yet.
  */
 class PocketBubbleService : Service() {
     private val manager by lazy { getSystemService(WINDOW_SERVICE) as WindowManager }
@@ -65,6 +66,7 @@ class PocketBubbleService : Service() {
     private var greetingTts: TextToSpeech? = null
     private var ttsReady = false
     private var greetingPending = false
+    private var usingPocketVoice = false
     private var speechPiecesPending = 0
     private var finishedGenerating = false
     private var queuedAnyReply = false
@@ -326,6 +328,24 @@ class PocketBubbleService : Service() {
                 val historyStore = LocalChatRepository(applicationContext)
                 val history = historyStore.load()
                 val currentSettings = AiSettings.load(applicationContext)
+                val memoryStore = MemoryRepository(applicationContext)
+                val transition = memoryStore.process(question, history, currentSettings)
+                if (transition.directReply != null) {
+                    val answer = transition.directReply
+                    val turns = listOf(
+                        Message(id = UUID.randomUUID().toString(), content = question, isUser = true),
+                        Message(id = UUID.randomUUID().toString(), content = answer,
+                            isUser = false, modelName = "Memory Engine"),
+                    )
+                    historyStore.mergeAndSave(turns)
+                    memoryStore.captureHistory(history + turns, currentSettings)
+                    speechPiecesPending = 0
+                    finishedGenerating = false
+                    speakPiece(answer)
+                    finishedGenerating = true
+                    if (speechPiecesPending == 0) hibernate()
+                    return@launch
+                }
                 val model = ModelRepository(applicationContext).verifiedModelOrNull()
                 if (model == null) {
                     reportUnavailable("Abra o EduAgent e baixe o Qwen para conversar por voz.")
@@ -354,7 +374,7 @@ class PocketBubbleService : Service() {
                 }
                 engine.setTemperature(currentSettings.temperature)
 
-                val prompt = ConversationBridge.forQwen(history, question, currentSettings)
+                val prompt = ConversationBridge.forQwen(history, question, currentSettings, transition.state)
                 val fullReply = StringBuilder()
                 val unsaid = StringBuilder()
                 speechPiecesPending = 0
@@ -371,13 +391,13 @@ class PocketBubbleService : Service() {
                 val answer = fullReply.toString().trim().ifBlank {
                     "Não consegui gerar uma resposta agora. Tente novamente."
                 }
-                // Load again just before writing, to preserve messages saved while generating.
-                val updatedHistory = historyStore.load()
-                historyStore.save(updatedHistory + listOf(
+                val turns = listOf(
                     Message(id = UUID.randomUUID().toString(), content = question, isUser = true),
                     Message(id = UUID.randomUUID().toString(), content = answer,
                         isUser = false, modelName = ModelRepository.MODEL_NAME)
-                ))
+                )
+                historyStore.mergeAndSave(turns)
+                memoryStore.captureHistory(history + turns, currentSettings)
                 if (!queuedAnyReply) speakPiece(answer)
                 finishedGenerating = true
                 if (speechPiecesPending == 0) hibernate()
@@ -430,20 +450,40 @@ class PocketBubbleService : Service() {
         }
     }
 
-    /** Android's installed pt-BR voice; native Pocket TTS is not yet packaged. */
+    /** Prefers community Kyutai Pocket TTS Android engine if installed with pt-BR pack. */
     private fun prepareGreetingVoice() {
         if (greetingTts != null) return
-        greetingTts = TextToSpeech(this, { result ->
+        val pocketAvailable = packageManager.queryIntentServices(
+            Intent(TextToSpeech.Engine.INTENT_ACTION_TTS_SERVICE).setPackage(POCKET_ENGINE_PACKAGE), 0
+        ).isNotEmpty()
+        initializeSpeechEngine(if (pocketAvailable) POCKET_ENGINE_PACKAGE else null)
+    }
+
+    private fun initializeSpeechEngine(preferred: String?) {
+        val listener = TextToSpeech.OnInitListener { result ->
+            usingPocketVoice = result == TextToSpeech.SUCCESS &&
+                greetingTts?.currentEngine == POCKET_ENGINE_PACKAGE
             val languageState = if (result == TextToSpeech.SUCCESS)
                 greetingTts?.setLanguage(Locale("pt", "BR")) else null
             ttsReady = languageState != null &&
                 languageState != TextToSpeech.LANG_MISSING_DATA &&
                 languageState != TextToSpeech.LANG_NOT_SUPPORTED
+            if ((!ttsReady || !usingPocketVoice) && preferred != null) {
+                // Pocket installed but not configured with pt-BR: use a functional
+                // system fallback rather than silently claiming Kyutai synthesis.
+                greetingTts?.shutdown()
+                greetingTts = null
+                usingPocketVoice = false
+                initializeSpeechEngine(null)
+                return@OnInitListener
+            }
             if (ttsReady && greetingPending && voiceState == VoiceState.GREETING) {
                 greetingPending = false
                 speakFixedGreeting()
             }
-        })
+        }
+        greetingTts = if (preferred != null) TextToSpeech(this, listener, preferred)
+            else TextToSpeech(this, listener)
         greetingTts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
             override fun onStart(utteranceId: String) = Unit
             override fun onDone(utteranceId: String) {
@@ -485,6 +525,7 @@ class PocketBubbleService : Service() {
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density + 0.5f).toInt()
 
     companion object {
+        const val POCKET_ENGINE_PACKAGE = "org.pockettts.android.engine"
         const val ACTION_START = "com.eduagent.localchat.START_POCKET_BUBBLE"
         const val ACTION_STOP = "com.eduagent.localchat.STOP_POCKET_BUBBLE"
         const val PREF_ACTIVE = "active"

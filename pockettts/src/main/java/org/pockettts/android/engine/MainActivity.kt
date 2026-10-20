@@ -317,7 +317,7 @@ class MainActivity : Activity() {
     private fun showAbout() {
         AlertDialog.Builder(this)
             .setTitle(R.string.about_title)
-            .setMessage(getString(R.string.about_message, BuildConfig.VERSION_NAME, REPOSITORY_URL))
+            .setMessage(getString(R.string.about_message, (packageManager.getPackageInfo(packageName, android.content.pm.PackageManager.PackageInfoFlags.of(0)).versionName ?: "?"), REPOSITORY_URL))
             .setNegativeButton(android.R.string.ok, null)
             .setPositiveButton(R.string.open_repository) { _, _ ->
                 runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(REPOSITORY_URL))) }

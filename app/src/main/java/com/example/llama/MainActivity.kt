@@ -78,6 +78,12 @@ class MainActivity : AppCompatActivity() {
     private var visionInstallJob: Job? = null
     private var generationJob: Job? = null
     private var isReady = false
+    private val voicePrefs by lazy { getSharedPreferences("eduagent_voice_settings", MODE_PRIVATE) }
+    private val pocketSpeaker by lazy {
+        PocketSpeechController(applicationContext) { message ->
+            Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
+        }
+    }
 
     private val requestOverlay = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
         if (Settings.canDrawOverlays(this)) requestMicPermission()
@@ -324,6 +330,7 @@ class MainActivity : AppCompatActivity() {
             updateEmptyState()
             list.scrollToPosition(messages.lastIndex)
             persistMessages()
+            val voiceEnabled = voicePrefs.getBoolean("speak_chat_replies", false) && pocketSpeaker.begin()
             // Checklists have a deterministic response: Qwen must not interpret an item
             // such as "Janela." as a request for a dictionary definition.
             if (transition.directReply != null) {
@@ -332,6 +339,10 @@ class MainActivity : AppCompatActivity() {
                 assistant.metrics = MessageMetrics(0, 0, 0, 0, 0)
                 updateMessage(assistant)
                 persistMessages()
+                if (voiceEnabled) {
+                    pocketSpeaker.append(assistant.content)
+                    pocketSpeaker.finish()
+                }
                 refreshComposer()
                 return@launch
             }
@@ -346,6 +357,7 @@ class MainActivity : AppCompatActivity() {
                         output.append(chunk)
                         assistant.content = output.toString()
                         updateMessage(assistant)
+                        if (voiceEnabled) pocketSpeaker.append(chunk)
                     }
                 }
             } catch (e: CancellationException) {
@@ -369,6 +381,9 @@ class MainActivity : AppCompatActivity() {
                 if (failure != null) assistant.content =
                     if (output.isEmpty()) "⚠ $failure" else "${output}\n\n⚠ $failure"
                 assistant.completed = true
+                if (voiceEnabled) {
+                    if (failure == null) pocketSpeaker.finish() else pocketSpeaker.cancel()
+                }
                 updateMessage(assistant)
                 persistMessages()
                 refreshComposer()
@@ -524,11 +539,65 @@ class MainActivity : AppCompatActivity() {
                 "Toque outra vez para hibernar imediatamente; arraste para mudar de lugar. " +
                 "Sem tocar, o microfone fica desligado.\n\n" +
                 "A saída de voz prioriza o motor Kyutai Pocket TTS para Android (se instalado " +
-                "com modelo pt-BR); caso contrário, usa o sintetizador padrão do Android. " +
+                "com modelo português); caso contrário, usa o sintetizador padrão do Android. " +
                 "O runtime Pocket ainda não vem empacotado no APK. A fala vira texto usando reconhecimento no próprio " +
                 "aparelho (se disponível), passa ao Qwen e a resposta fica salva no chat. " +
                 "O áudio não é enviado a um servidor pelo EduAgent.")
             .setPositiveButton("Entendi", null)
+            .setNeutralButton("Configurar Pocket TTS") { _, _ -> showPocketSetup() }
+            .show()
+    }
+
+    private fun openPocketLink(url: String) {
+        runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
+            .onFailure { Toast.makeText(this, "Não foi possível abrir o download", Toast.LENGTH_LONG).show() }
+    }
+
+    /** Pocket TTS is a separately installed Android engine; never claim bundled weights. */
+    private fun showPocketSetup() {
+        val installed = PocketSpeechController.isInstalled(this)
+        val status = if (installed) "Motor Pocket TTS detectado. Confira se o modelo português foi importado."
+            else "Motor não instalado. Instale o APK, depois importe o pacote português (198 MB)."
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding((20 * dp).toInt(), (8 * dp).toInt(),
+                (20 * dp).toInt(), (8 * dp).toInt())
+        }
+        content.addView(TextView(this).apply {
+            text = "$status\n\nA voz funciona offline após importar o ZIP no aplicativo Pocket " +
+                "TTS. O sotaque pode ser europeu. Na engrenagem, habilite a fala durante " +
+                "a geração do texto; a bolha também fala por frases."
+            textSize = 15f
+            setPadding(0, 0, 0, (8 * dp).toInt())
+        })
+        fun action(label: String, onClick: () -> Unit) {
+            content.addView(MaterialButton(this).apply {
+                text = label
+                setOnClickListener { onClick() }
+            })
+        }
+        action("1 · Baixar motor Pocket TTS (11 MB)") {
+            openPocketLink(PocketSpeechController.ENGINE_APK_URL)
+        }
+        action("2 · Baixar modelo português (198 MB)") {
+            openPocketLink(PocketSpeechController.PORTUGUESE_PACK_URL)
+        }
+        action("3 · Abrir aplicativo Pocket TTS") {
+            val intent = packageManager.getLaunchIntentForPackage(PocketSpeechController.ENGINE_PACKAGE)
+            if (intent != null) startActivity(intent)
+            else Toast.makeText(this, "Instale o motor antes de abrir", Toast.LENGTH_LONG).show()
+        }
+        action("4 · Testar minha voz Pocket agora") {
+            if (pocketSpeaker.begin()) {
+                pocketSpeaker.append("Olá, Daniel! Eu sou o EduAgent. Já posso ler minhas " +
+                    "respostas enquanto o Qwen continua pensando.")
+                pocketSpeaker.finish()
+            }
+        }
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Kyutai Pocket TTS · instalação")
+            .setView(ScrollView(this).apply { addView(content) })
+            .setNegativeButton("Fechar", null)
             .show()
     }
 
@@ -668,6 +737,12 @@ class MainActivity : AppCompatActivity() {
         val autoSummarize = toggle("Resumo automático dos turnos antigos", settings.autoSummarize)
         val ragEnabled = toggle("RAG local: recuperar mensagens antigas", settings.ragEnabled)
         val ragCount = slider("Lembranças recuperadas por pergunta", 1, 6, 1, settings.ragResults)
+        val readAloud = toggle("Falar respostas enquanto o Qwen escreve (Pocket TTS)",
+            voicePrefs.getBoolean("speak_chat_replies", false))
+        content.addView(MaterialButton(this).apply {
+            text = "Instalar / configurar voz Kyutai Pocket TTS"
+            setOnClickListener { showPocketSetup() }
+        })
 
         val fast = MaterialButton(this).apply {
             text = "Perfil rápido: respostas menores"
@@ -694,6 +769,8 @@ class MainActivity : AppCompatActivity() {
             .setNegativeButton("Cancelar", null)
             .setNeutralButton("Restaurar") { _, _ -> applySettings(AiSettings()) }
             .setPositiveButton("Salvar") { _, _ ->
+                voicePrefs.edit().putBoolean("speak_chat_replies", readAloud.isChecked).apply()
+                if (!readAloud.isChecked) pocketSpeaker.cancel()
                 applySettings(AiSettings(
                     qwenMaxTokens = 32 + qwenLimit.progress * 32,
                     visionMaxTokens = 16 + visualLimit.progress * 16,
@@ -838,6 +915,11 @@ class MainActivity : AppCompatActivity() {
     override fun onStop() {
         generationJob?.cancel()
         super.onStop()
+    }
+
+    override fun onDestroy() {
+        pocketSpeaker.cancel()
+        super.onDestroy()
     }
 
     companion object {

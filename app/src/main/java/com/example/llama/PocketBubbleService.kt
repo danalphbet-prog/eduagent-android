@@ -450,7 +450,7 @@ class PocketBubbleService : Service() {
         }
     }
 
-    /** Prefers community Kyutai Pocket TTS Android engine if installed with pt-BR pack. */
+    /** Prefers community Pocket TTS engine when a Portuguese voice has been imported. */
     private fun prepareGreetingVoice() {
         if (greetingTts != null) return
         val pocketAvailable = packageManager.queryIntentServices(
@@ -463,13 +463,16 @@ class PocketBubbleService : Service() {
         val listener = TextToSpeech.OnInitListener { result ->
             usingPocketVoice = result == TextToSpeech.SUCCESS &&
                 preferred == POCKET_ENGINE_PACKAGE
-            val languageState = if (result == TextToSpeech.SUCCESS)
+            val br = if (result == TextToSpeech.SUCCESS)
                 greetingTts?.setLanguage(Locale("pt", "BR")) else null
+            val languageState = if (br == TextToSpeech.LANG_MISSING_DATA ||
+                br == TextToSpeech.LANG_NOT_SUPPORTED)
+                greetingTts?.setLanguage(Locale("pt", "PT")) else br
             ttsReady = languageState != null &&
                 languageState != TextToSpeech.LANG_MISSING_DATA &&
                 languageState != TextToSpeech.LANG_NOT_SUPPORTED
             if ((!ttsReady || !usingPocketVoice) && preferred != null) {
-                // Pocket installed but not configured with pt-BR: use a functional
+                // Pocket installed but not configured with Portuguese: use a functional
                 // system fallback rather than silently claiming Kyutai synthesis.
                 greetingTts?.shutdown()
                 greetingTts = null
